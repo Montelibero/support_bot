@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from main import main
 
 @patch("main.asyncio.run")
-@patch("main.Dispatcher.start_polling")
+@patch("main.Dispatcher.start_polling", new_callable=MagicMock)
 @patch("main.bot_config")
 @patch("main.RedisStorage")
 def test_main_polling_setup(mock_redis_storage, mock_config, mock_start_polling, mock_asyncio_run):

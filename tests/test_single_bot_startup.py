@@ -4,9 +4,10 @@ import pytest
 from single_bot import main
 
 @patch("single_bot.asyncio.run")
-@patch("single_bot.Dispatcher.start_polling")
+@patch("single_bot.Dispatcher.start_polling", new_callable=MagicMock)
 @patch("single_bot.bot_config")
-def test_single_bot_setup(mock_config, mock_start_polling, mock_asyncio_run):
+@patch("single_bot.Bot")
+def test_single_bot_setup(mock_bot_cls, mock_config, mock_start_polling, mock_asyncio_run):
     """
     Test that single_bot.py initializes components correctly 
     and attempts to start polling.

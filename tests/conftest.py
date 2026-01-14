@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiogram import Dispatcher
@@ -22,7 +22,7 @@ class MockRepo(Repo):
     async def get_user_info(self, user_id):
         # Return a mock object if user exists
         if user_id in self.users:
-            user = AsyncMock()
+            user = MagicMock()
             user.user_id = user_id
             user.user_name = self.users[user_id]
             return user

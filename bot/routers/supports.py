@@ -203,7 +203,7 @@ async def cmd_link(message: types.Message, bot: Bot, bot_settings: SupportBotSet
 
 @router.message()
 async def cmd_resend(message: types.Message, bot: Bot, repo: Repo, bot_settings: SupportBotSettings, config: BotConfig):
-    logger.info(f"Support bot message - Username: {(await bot.me()).username}, Chat ID: {message.chat.id}")
+    logger.info(f"Support bot message - Username: {(await bot.get_me()).username}, Chat ID: {message.chat.id}")
     if message.chat.id == bot_settings.master_chat:
         if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
             user_info = await repo.get_user_info(message.from_user.id)
@@ -494,7 +494,7 @@ async def on_my_chat_member(update: ChatMemberUpdated, bot: Bot):
     chat = update.chat
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
-    bot_user = await bot.me()
+    bot_user = await bot.get_me()
     bot_info = f"Bot {bot_user.id} (@{bot_user.username})"
 
     if old_status != new_status:
