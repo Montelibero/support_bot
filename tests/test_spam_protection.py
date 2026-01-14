@@ -184,5 +184,83 @@ async def test_spam_protection(mock_server, repo):
     req_forward_2 = next((r for r in mock_server if r["method"] == "sendMessage" and str(r["data"]["chat_id"]) == str(MASTER_CHAT_ID)), None)
     assert req_forward_2 is not None
     assert "Link again" in req_forward_2["data"]["text"]
+    
+    mock_server.clear()
+    
+    # 6. Test Step 5: (NEW) User sends Image WITHOUT link (Should be Allowed)
+    # Reset user state? No, user has received reply already so they are "trusted" now.
+    # WAIT! The issue says "New user". Current user (555) has received a reply, so they are trusted.
+    # We need a NEW user for this test to verify the "untusted user" behavior.
+    
+    NEW_USER_ID = 777
+    
+    update_image_no_link = types.Update(
+        update_id=5,
+        message=types.Message(
+            message_id=50,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=NEW_USER_ID, type='private'),
+            from_user=types.User(id=NEW_USER_ID, is_bot=False, first_name="New Guy", username="new_guy"),
+            photo=[types.PhotoSize(file_id="FILE_ID_123", width=100, height=100, file_unique_id="UID_123")],
+            caption="Just a photo"
+        )
+    )
+    
+    await dp.feed_update(bot=bot, update=update_image_no_link)
+    
+    # Verify BLOCKED (Strict Mode)
+    req_block_photo = next((r for r in mock_server if r["method"] == "sendMessage" and str(r["data"]["chat_id"]) == str(NEW_USER_ID)), None)
+    assert req_block_photo is not None, "Image should be BLOCKED in strict mode"
+    assert "Links and media are not allowed" in req_block_photo["data"]["text"]
+    
+    mock_server.clear()
+    
+    # 7. Test Step 6: (NEW) User sends Image WITH link in caption (Should be Blocked)
+    
+    caption_with_link = "Check photo http://spam.com"
+    entity_caption = MessageEntity(type="url", offset=12, length=15)
+    
+    update_image_link = types.Update(
+        update_id=6,
+        message=types.Message(
+            message_id=51,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=NEW_USER_ID, type='private'),
+            from_user=types.User(id=NEW_USER_ID, is_bot=False, first_name="New Guy", username="new_guy"),
+            photo=[types.PhotoSize(file_id="FILE_ID_123", width=100, height=100, file_unique_id="UID_123")],
+            caption=caption_with_link,
+            caption_entities=[entity_caption]
+        )
+    )
+    
+    await dp.feed_update(bot=bot, update=update_image_link)
+    
+    # Verify Block Message to USER
+    req_block_img = next((r for r in mock_server if r["method"] == "sendMessage" and str(r["data"]["chat_id"]) == str(NEW_USER_ID)), None)
+    assert req_block_img is not None
+    assert "Links and media are not allowed" in req_block_img["data"]["text"]
+    
+    mock_server.clear()
+
+    # 8. Test Step 7: Disable Strict Mode and Send Image (Should be Allowed)
+    mock_settings.block_links = False
+    
+    update_image_allowed = types.Update(
+        update_id=7,
+        message=types.Message(
+            message_id=52,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=NEW_USER_ID, type='private'),
+            from_user=types.User(id=NEW_USER_ID, is_bot=False, first_name="New Guy", username="new_guy"),
+            photo=[types.PhotoSize(file_id="FILE_ID_123", width=100, height=100, file_unique_id="UID_123")],
+            caption="Just a photo again"
+        )
+    )
+    
+    await dp.feed_update(bot=bot, update=update_image_allowed)
+    
+    # Verify Forwarded (Allowed)
+    req_photo_allowed = next((r for r in mock_server if r["method"] == "sendPhoto" and str(r["data"]["chat_id"]) == str(MASTER_CHAT_ID)), None)
+    assert req_photo_allowed is not None, "Image should be allow when block_links=False"
 
     await bot.session.close()

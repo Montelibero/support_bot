@@ -227,11 +227,11 @@ async def cmd_resend(message: types.Message, bot: Bot, repo: Repo, bot_settings:
             await cmd_alert_bad(message, bot, bot_settings)
     elif message.chat.type == 'private':
         user_has_reply = await repo.has_user_received_reply(bot_id=bot.id, user_id=message.from_user.id)
-        if not user_has_reply:
+        if not user_has_reply and bot_settings.block_links:
             if message.content_type != ContentType.TEXT:
                 await message.reply("Ссылки и медиа запрещены / Links and media are not allowed")
                 return
-            if bot_settings.block_links and message.entities:
+            if message.entities:
                 for entity in message.entities:
                     if entity.type in [MessageEntityType.URL, MessageEntityType.TEXT_LINK,
                                        MessageEntityType.TEXT_MENTION, MessageEntityType.MENTION,

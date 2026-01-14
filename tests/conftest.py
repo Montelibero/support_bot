@@ -159,6 +159,31 @@ async def mock_server():
             }
         })
 
+    @routes.post("/bot{token}/sendPhoto")
+    async def send_photo(request):
+        if request.content_type == 'application/json':
+            data = await request.json()
+        else:
+            data = await request.post()
+            
+        data = dict(data)
+        received_requests.append({"method": "sendPhoto", "token": request.match_info['token'], "data": data})
+        
+        try:
+            chat_id = int(data.get('chat_id', 12345))
+        except (ValueError, TypeError):
+            chat_id = 12345
+            
+        return web.json_response({
+            "ok": True,
+            "result": {
+                "message_id": 2, 
+                "date": 1234567890,
+                "chat": {"id": chat_id, "type": "private"},
+                "photo": [] 
+            }
+        })
+
     app = web.Application()
     app.add_routes(routes)
     runner = web.AppRunner(app)
