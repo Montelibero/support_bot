@@ -455,8 +455,14 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
         return
 
     if message.chat.id == bot_settings.master_chat:
+        # Check if Admin is reacting to a forwarded ticket (resend_id=msg_id)
         send_info = await repo.get_message_resend_info(bot_id=bot.id, resend_id=message.message_id,
                                             chat_for_id=message.chat.id)
+        # If not, check if Admin is reacting to their own reply (message_id=msg_id)
+        if not send_info:
+             send_info = await repo.get_message_resend_info(bot_id=bot.id, message_id=message.message_id,
+                                            chat_from_id=message.chat.id)
+
         if send_info is None:
             if bot_settings.mark_bad:
                 await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
@@ -464,7 +470,17 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
             return
 
         try:
-            await bot.set_message_reaction(chat_id=send_info.chat_from_id, message_id=send_info.message_id,
+            # Determine target chat and message ID
+            if send_info.chat_for_id == message.chat.id:
+                 # We found it via resend_id (Forwarded Ticket). Target is source (User).
+                 target_chat = send_info.chat_from_id
+                 target_msg = send_info.message_id
+            else:
+                 # We found it via message_id (Admin Reply). Target is destination (User).
+                 target_chat = send_info.chat_for_id
+                 target_msg = send_info.resend_id
+
+            await bot.set_message_reaction(chat_id=target_chat, message_id=target_msg,
                                            reaction=[message.new_reaction[0]])
             await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
                                            reaction=[ReactionTypeEmoji(emoji='👍')])
@@ -475,11 +491,28 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
                 logger.error(ex)
 
     else:
+        # Check if User is reacting to their own ticket (message_id=msg_id)
         send_info = await repo.get_message_resend_info(bot_id=bot.id, message_id=message.message_id,
                                             chat_from_id=message.chat.id)
+        
+        # If not, check if User is reacting to an Admin reply (resend_id=msg_id)
+        if not send_info:
+            send_info = await repo.get_message_resend_info(bot_id=bot.id, resend_id=message.message_id,
+                                            chat_for_id=message.chat.id)
+
         if send_info:
             try:
-                await bot.set_message_reaction(chat_id=send_info.chat_for_id, message_id=send_info.resend_id,
+                # Determine target chat and message ID
+                if send_info.chat_from_id == message.chat.id:
+                     # Found via message_id (User Ticket). Target is destination (Master).
+                     target_chat = send_info.chat_for_id
+                     target_msg = send_info.resend_id
+                else:
+                     # Found via resend_id (Received Reply). Target is source (Master).
+                     target_chat = send_info.chat_from_id
+                     target_msg = send_info.message_id
+
+                await bot.set_message_reaction(chat_id=target_chat, message_id=target_msg,
                                                reaction=[message.new_reaction[0]])
                 await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
                                                reaction=[ReactionTypeEmoji(emoji='👍')])
