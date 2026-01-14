@@ -6,6 +6,17 @@
 
 ## Установка
 
+### Рекомендуемый способ (Docker pull)
+
+1. Скачайте готовый образ:
+```bash
+docker pull ghcr.io/montelibero/support_bot:latest
+```
+
+2. Создайте файл `.env` в корневой директории проекта
+
+### Альтернатива: установка из исходников
+
 1. Клонируйте репозиторий
 ```bash
 git clone <repository_url>
@@ -120,5 +131,11 @@ ENVIRONMENT=production uv run main.py
 ```bash
 docker compose up -d
 ```
-Бот запустится вместе с необходимым ему Redis.
+Бот запустится вместе с необходимым ему Redis. По умолчанию `docker-compose.yml` использует образ `ghcr.io/montelibero/support_bot:latest`.
 
+### Сборка образа вручную (опционально)
+
+Если нужно собрать образ самостоятельно и использовать его в `docker-compose.yml`:
+```bash
+docker build -t support_bot:local .
+```

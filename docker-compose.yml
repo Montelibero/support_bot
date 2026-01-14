@@ -8,7 +8,7 @@ services:
       - redis_data:/data
 
   bot:
-    build: .
+    image: ghcr.io/montelibero/support_bot:latest
     restart: always
     # Mount data directory to persist support.db
     # Mount logs directory to persist logs
