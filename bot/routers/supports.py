@@ -494,31 +494,33 @@ async def on_my_chat_member(update: ChatMemberUpdated, bot: Bot):
     chat = update.chat
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
+    bot_user = await bot.me()
+    bot_info = f"Bot {bot_user.id} (@{bot_user.username})"
 
     if old_status != new_status:
         if new_status == ChatMemberStatus.MEMBER:
-            logger.info(f"Bot was added to chat {chat.id}")
+            logger.info(f"{bot_info} was added to chat {chat.id}")
             if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                 await bot.send_message(chat.id,
                                        "Thanks for adding me to this chat! Please make me an admin to work properly.")
 
         elif new_status == ChatMemberStatus.LEFT:
-            logger.info(f"Bot was removed from chat {chat.id}")
+            logger.info(f"{bot_info} was removed from chat {chat.id}")
 
         elif new_status == ChatMemberStatus.ADMINISTRATOR:
-            logger.info(f"Bot's permissions were updated in chat {chat.id}")
+            logger.info(f"{bot_info} permissions were updated in chat {chat.id}")
             if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                 await bot.send_message(chat.id,
                                        "Thanks for making me an admin! To link this chat, run the /link command in the topic you want to link.")
 
         elif new_status == ChatMemberStatus.RESTRICTED:
-            logger.warning(f"Bot's permissions were restricted in chat {chat.id}")
+            logger.warning(f"{bot_info} permissions were restricted in chat {chat.id}")
 
         elif new_status == ChatMemberStatus.KICKED:
-            logger.warning(f"Bot was kicked from chat {chat.id}")
+            logger.warning(f"{bot_info} was kicked from chat {chat.id}")
 
         else:
-            logger.info(f"Bot status changed in chat {chat.id} from {old_status} to {new_status}")
+            logger.info(f"{bot_info} status changed in chat {chat.id} from {old_status} to {new_status}")
 
 
 @router.callback_query(LinkChatCallbackData.filter())
