@@ -396,16 +396,17 @@ async def resend_message_plus(message: types.Message, bot: Bot, repo: Repo, chat
             resend_message = await bot.send_animation(chat_id=chat_id, message_thread_id=message_thread_id,
                                                       animation=message.animation.file_id,
                                                       reply_to_message_id=reply_to_message_id)
-            save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
+            await repo.save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
                              resend_id=resend_message.message_id, chat_from_id=message.chat.id,
                              chat_for_id=resend_message.chat.id)
+
 
         if message.location:
             resend_message = await bot.send_location(chat_id=chat_id, message_thread_id=message_thread_id,
                                                      latitude=message.location.latitude,
                                                      longitude=message.location.longitude,
                                                      reply_to_message_id=reply_to_message_id)
-            save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
+            await repo.save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
                              resend_id=resend_message.message_id, chat_from_id=message.chat.id,
                              chat_for_id=resend_message.chat.id)
 
@@ -415,7 +416,7 @@ async def resend_message_plus(message: types.Message, bot: Bot, repo: Repo, chat
                                                     first_name=message.contact.first_name,
                                                     last_name=message.contact.last_name,
                                                     reply_to_message_id=reply_to_message_id)
-            save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
+            await repo.save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
                              resend_id=resend_message.message_id, chat_from_id=message.chat.id,
                              chat_for_id=resend_message.chat.id)
         if message.venue:
@@ -425,7 +426,7 @@ async def resend_message_plus(message: types.Message, bot: Bot, repo: Repo, chat
                                                   title=message.venue.title,
                                                   address=message.venue.address,
                                                   reply_to_message_id=reply_to_message_id)
-            save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
+            await repo.save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
                              resend_id=resend_message.message_id, chat_from_id=message.chat.id,
                              chat_for_id=resend_message.chat.id)
 

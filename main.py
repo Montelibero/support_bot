@@ -40,6 +40,8 @@ async def aiogram_on_shutdown_polling(dispatcher: Dispatcher, bot: Bot) -> None:
 async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
     # Определяем типы обновлений, которые используются в обработчиках
     allowed_updates = dispatcher.resolve_used_update_types()
+    if 'message_reaction' not in allowed_updates:
+        allowed_updates.append('message_reaction')
     logger.info(f"Used update types for webhook: {allowed_updates}")
     
     # Устанавливаем команды для бота

@@ -65,3 +65,24 @@ To add custom behavior for a bot (e.g., Bot ID `123456789`), follow these steps:
 ### Testing
 
 You can use the `test_customization.py` as a reference for writing unit tests for your new customization.
+
+### Webhook Allowed Updates
+
+When running in **Webhook mode** (Production), the list of allowed update types (e.g., `message`, `callback_query`, `message_reaction`) is calculated automatically based **only on the Main Bot's handlers**.
+
+If your customization introduces a handler for an update type that the Main Bot does NOT use (e.g., `message_reaction`), you **must** manually ensure it is included in the `allowed_updates` list in `main.py`.
+
+In `main.py`, the `aiogram_on_startup_webhook` function is responsible for this:
+
+```python
+async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
+    allowed_updates = dispatcher.resolve_used_update_types()
+    
+    # If your customization uses 'message_reaction', verify it's here:
+    if 'message_reaction' not in allowed_updates:
+        allowed_updates.append('message_reaction')
+        
+    # ...
+```
+
+Failure to do this will result in Telegram **never sending** those specific updates to your bot, even if the handlers are correctly registered.
