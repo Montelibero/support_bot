@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+
+# Python/Environment
+.venv
+.env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# IDEs
+.idea
+.vscode
+
+# Data & Logs (mounted in docker-compose)
+data/
+logs/
+
+# Testing
+tests/
+.pytest_cache
+pytest.ini
+
+# Deployment/Docs
+deploy/
+docker-compose.yml
+Dockerfile
+README.md
+GEMINI.md

@@ -1,0 +1,24 @@
+[project]
+name = "supportbots"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.24.0",
+    "aiogram-dialog>=2.4.0",
+    "aiohttp>=3.13.3",
+    "aiosqlite>=0.22.1",
+    "environs>=14.5.0",
+    "loguru~=0.7.2",
+    "pydantic>=2.12.5",
+    "redis>=7.1.0",
+    "sentry-sdk>=2.49.0",
+    "sqlalchemy~=2.0.25",
+    "tinydb~=4.8.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
