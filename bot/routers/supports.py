@@ -474,11 +474,11 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
                 logger.error(ex)
 
     else:
-        send_info = await repo.get_message_resend_info(bot_id=bot.id, resend_id=message.message_id,
-                                            chat_for_id=message.chat.id)
+        send_info = await repo.get_message_resend_info(bot_id=bot.id, message_id=message.message_id,
+                                            chat_from_id=message.chat.id)
         if send_info:
             try:
-                await bot.set_message_reaction(chat_id=send_info.chat_from_id, message_id=send_info.message_id,
+                await bot.set_message_reaction(chat_id=send_info.chat_for_id, message_id=send_info.resend_id,
                                                reaction=[message.new_reaction[0]])
                 await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
                                                reaction=[ReactionTypeEmoji(emoji='👍')])
