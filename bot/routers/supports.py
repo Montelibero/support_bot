@@ -3,6 +3,7 @@ from asyncio import sleep
 
 from aiogram import types, Router, Bot, F
 from aiogram.enums import ChatType, ChatMemberStatus, MessageEntityType, ContentType
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import ReactionTypeEmoji, ChatMemberUpdated, Message
@@ -435,6 +436,23 @@ async def resend_message_plus(message: types.Message, bot: Bot, repo: Repo, chat
         await repo.save_message_ids(bot_id=bot.id, user_id=support_user_id, message_id=message.message_id,
                          resend_id=resend_message.message_id, chat_from_id=message.chat.id,
                          chat_for_id=resend_message.chat.id)
+
+    except TelegramBadRequest as ex:
+        if "message reply" in str(ex).lower() or "message to be replied" in str(ex).lower() or "not found" in str(ex).lower():
+            logger.warning(f"Message to reply not found or deleted, sending as new message: {ex}")
+            if reply_to_message_id is not None:
+                await resend_message_plus(message=message, bot=bot, repo=repo, chat_id=chat_id, text=text,
+                                          reply_to_message_id=None, support_user_id=support_user_id,
+                                          message_thread_id=message_thread_id, config=config, do_exception=do_exception,
+                                          reply_markup=reply_markup)
+                return
+        if message.chat.id == config.get_bot_setting(bot.id).master_chat:
+            if do_exception:
+                raise ex
+            else:
+                await message.answer(f'Ошибка отправки\n{ex}')
+        else:
+            await message.answer(f'Send error =(')
 
     except Exception as ex:
         if message.chat.id == config.get_bot_setting(bot.id).master_chat:
