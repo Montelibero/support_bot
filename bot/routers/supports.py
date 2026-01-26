@@ -483,8 +483,15 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
 
         if send_info is None:
             if bot_settings.mark_bad:
-                await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
-                                               reaction=[ReactionTypeEmoji(emoji='👀')])
+                try:
+                    await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
+                                                   reaction=[ReactionTypeEmoji(emoji='👀')])
+                except Exception as ex:
+                    if any(msg in str(ex) for msg in
+                           ['Bad Request: message is not modified', 'Bad Request: message to react not found']):
+                        pass
+                    else:
+                        logger.error(ex)
             return
 
         try:
@@ -503,7 +510,7 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
             await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
                                            reaction=[ReactionTypeEmoji(emoji='👍')])
         except Exception as ex:
-            if str(ex).find('Bad Request: message is not modified') > 0:
+            if any(msg in str(ex) for msg in ['Bad Request: message is not modified', 'Bad Request: message to react not found']):
                 pass
             else:
                 logger.error(ex)
@@ -535,7 +542,7 @@ async def message_reaction(message: types.MessageReactionUpdated, bot: Bot, repo
                 await bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id,
                                                reaction=[ReactionTypeEmoji(emoji='👍')])
             except Exception as ex:
-                if str(ex).find('Bad Request: message is not modified') > 0:
+                if any(msg in str(ex) for msg in ['Bad Request: message is not modified', 'Bad Request: message to react not found']):
                     pass
                 else:
                     logger.error(ex)
