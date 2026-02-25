@@ -43,7 +43,7 @@ async def test_startup_unauthorized_error():
         with patch(
             "main.Bot",
             side_effect=TelegramUnauthorizedError(
-                method="setWebhook", message="Unauthorized"
+                method=MagicMock(), message="Unauthorized"
             ),
         ):
             # Mock set_commands to avoid other errors/dependencies

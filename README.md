@@ -130,7 +130,7 @@ ENVIRONMENT=production uv run main.py
 ```bash
 just test       # Полный запуск тестов (можно передать аргументы: just test "-q")
 just test-fast  # Быстрая выборка smoke-тестов
-just lint       # Ruff lint (стартовая область: кастомизации + key tests)
+just lint       # Ruff lint (стартовая область: customizations + startup path)
 just fmt        # Ruff format для стартовой области
 just types      # Pyright type-check для стартовой области
 just arch-test  # Базовая структурная проверка обязательной документации

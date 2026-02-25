@@ -160,7 +160,10 @@ def main():
         TokenBasedRequestHandler(
             dispatcher=multibot_dispatcher,
             bots={
-                bot_setting.token: Bot(token=bot_setting.token, **bot_settings)
+                bot_setting.token: Bot(
+                    token=bot_setting.token,
+                    default=bot_settings["default"],
+                )
                 for bot_setting in bot_config.get_bot_settings()
                 if bot_setting.can_work
             },
