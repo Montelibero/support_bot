@@ -22,11 +22,18 @@
 
 Before merge, run project checks and include what was run in PR notes.
 
+Touched-file rule:
+
+- If a Python file is modified, it must pass new rails (`ruff` + `pyright`) in the same change.
+- Use `just check-changed` during development to enforce this incrementally.
+
 Recommended command set (to be standardized incrementally):
 
 - `just test`
 - `just lint`
 - `just fmt`
+- `just types`
+- `just check-changed`
 - `just check`
 
 ## Documentation

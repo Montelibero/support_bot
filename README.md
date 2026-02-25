@@ -133,6 +133,7 @@ just test-fast  # Быстрая выборка smoke-тестов
 just lint       # Ruff lint (стартовая область: customizations + startup path)
 just fmt        # Ruff format для стартовой области
 just types      # Pyright type-check для стартовой области
+just check-changed  # Проверка только измененных .py файлов (ruff+pyright)
 just arch-test  # Базовая структурная проверка обязательной документации
 just check      # format --check + lint + types + test-fast
 ```

@@ -26,6 +26,9 @@ arch-test:
 check:
     uv run --group dev ruff format --check bot/customizations main.py tests/test_customization.py tests/test_webhook_updates.py tests/test_startup_error.py && just lint && just types && just test-fast
 
+check-changed:
+    uv run --group dev python -c "import subprocess,sys; rows=subprocess.check_output(['git','status','--porcelain']).decode().splitlines(); paths=sorted({r[3:].strip() for r in rows if len(r)>3 and r[3:].strip().endswith('.py') and ' -> ' not in r}); print('changed python files:', paths if paths else '<none>'); sys.exit(0) if not paths else None; subprocess.check_call(['uv','run','--group','dev','ruff','format','--check',*paths]); subprocess.check_call(['uv','run','--group','dev','ruff','check',*paths]); subprocess.check_call(['uv','run','--group','dev','pyright',*paths])"
+
 # Docker targets
 build tag="latest":
     # Build Docker image
