@@ -60,27 +60,31 @@ async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
     )
 
     for bot_setting in bot_config.get_bot_settings():
+        if not bot_setting.can_work:
+            logger.info(
+                f"skip webhook setup for disabled bot {bot_setting.username} {bot_setting.id}"
+            )
+            continue
+
         try:
             tmp_bot = Bot(token=bot_setting.token)
 
-            if bot_setting.can_work:
-                # Устанавливаем команды для дополнительного бота
-                from config.bot_config import set_commands
+            # Устанавливаем команды для дополнительного бота
+            from config.bot_config import set_commands
 
-                await set_commands(tmp_bot)
+            await set_commands(tmp_bot)
 
-                await tmp_bot.set_webhook(
-                    url=bot_config.other_bots_url.format(bot_token=bot_setting.token),
-                    allowed_updates=allowed_updates,
-                )
-            else:
-                await tmp_bot.delete_webhook()
+            await tmp_bot.set_webhook(
+                url=bot_config.other_bots_url.format(bot_token=bot_setting.token),
+                allowed_updates=allowed_updates,
+            )
         except TelegramUnauthorizedError:
             logger.error(
                 f"TelegramUnauthorizedError {bot_setting.username} {bot_setting.id} - disabling bot"
             )
-            bot_setting.can_work = False
-            await bot_config.save_settings_to_db(bot_setting)
+            if bot_setting.can_work:
+                bot_setting.can_work = False
+                await bot_config.save_settings_to_db(bot_setting)
         except Exception as e:
             logger.error(f"set_webhook_error {bot_setting.username} {bot_setting.id}")
             logger.error(e)
