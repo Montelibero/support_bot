@@ -67,17 +67,16 @@ async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
             continue
 
         try:
-            tmp_bot = Bot(token=bot_setting.token)
+            async with Bot(token=bot_setting.token) as tmp_bot:
+                # Устанавливаем команды для дополнительного бота
+                from config.bot_config import set_commands
 
-            # Устанавливаем команды для дополнительного бота
-            from config.bot_config import set_commands
+                await set_commands(tmp_bot)
 
-            await set_commands(tmp_bot)
-
-            await tmp_bot.set_webhook(
-                url=bot_config.other_bots_url.format(bot_token=bot_setting.token),
-                allowed_updates=allowed_updates,
-            )
+                await tmp_bot.set_webhook(
+                    url=bot_config.other_bots_url.format(bot_token=bot_setting.token),
+                    allowed_updates=allowed_updates,
+                )
         except TelegramUnauthorizedError:
             logger.error(
                 f"TelegramUnauthorizedError {bot_setting.username} {bot_setting.id} - disabling bot"

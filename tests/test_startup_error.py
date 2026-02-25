@@ -94,3 +94,42 @@ async def test_startup_skips_disabled_bot_without_telegram_calls():
 
         mock_bot_ctor.assert_not_called()
         mock_config.save_settings_to_db.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_closes_tmp_bot_session_after_webhook_setup():
+    mock_dispatcher = MagicMock()
+    mock_dispatcher.resolve_used_update_types.return_value = ["message"]
+    mock_main_bot = AsyncMock()
+
+    with patch("main.bot_config") as mock_config:
+        enabled_bot = SupportBotSettings(
+            id=999,
+            username="enabled_bot",
+            token="valid_token",
+            start_message="Hi",
+            security_policy="default",
+            no_start_message=False,
+            special_commands=0,
+            mark_bad=False,
+            owner=1,
+            can_work=True,
+        )
+        mock_config.get_bot_settings.return_value = [enabled_bot]
+        mock_config.save_settings_to_db = AsyncMock()
+        mock_config.BASE_URL = "https://example.com"
+        mock_config.SECRET_URL = "secret"
+        mock_config.MAIN_BOT_PATH = "main"
+        type(mock_config).other_bots_url = "https://example.com/secret/bot/{bot_token}"
+
+        tmp_bot = AsyncMock()
+        bot_ctx_manager = AsyncMock()
+        bot_ctx_manager.__aenter__.return_value = tmp_bot
+
+        with patch("main.Bot", return_value=bot_ctx_manager):
+            with patch("config.bot_config.set_commands", new=AsyncMock()):
+                await aiogram_on_startup_webhook(mock_dispatcher, mock_main_bot)
+
+        bot_ctx_manager.__aenter__.assert_awaited_once()
+        bot_ctx_manager.__aexit__.assert_awaited_once()
+        tmp_bot.set_webhook.assert_awaited_once()
