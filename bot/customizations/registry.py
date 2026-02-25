@@ -11,6 +11,7 @@ def register_customization(bot_id: int):
     def decorator(cls: Type[AbstractBotCustomization]):
         _CUSTOMIZATION_REGISTRY[bot_id] = cls
         return cls
+
     return decorator
 
 

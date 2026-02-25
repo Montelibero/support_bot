@@ -13,11 +13,15 @@ class AbstractBotCustomization(ABC):
         pass
 
     @abstractmethod
-    async def get_extra_text(self, user: User, message: Message, bot_settings: SupportBotSettings) -> str:
+    async def get_extra_text(
+        self, user: User, message: Message, bot_settings: SupportBotSettings
+    ) -> str:
         """Returns extra text to append to the forwarded message."""
         pass
 
     @abstractmethod
-    async def get_reply_markup(self, user: User, message: Message, bot_settings: SupportBotSettings) -> Optional[InlineKeyboardMarkup]:
+    async def get_reply_markup(
+        self, user: User, message: Message, bot_settings: SupportBotSettings
+    ) -> Optional[InlineKeyboardMarkup]:
         """Returns the reply markup (buttons) for the forwarded message."""
         pass

@@ -1,7 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from bot.customizations.registry import get_customization, register_customization
-from bot.customizations.interface import AbstractBotCustomization
+from bot.customizations.registry import get_customization
 from bot.customizations.default import DefaultBotCustomization
 from bot.customizations.test_customization import TestCustomization
 from bot.customizations.helper import HelperCustomization

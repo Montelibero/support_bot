@@ -123,6 +123,20 @@ ENVIRONMENT=production uv run main.py
 - Доступ к API Telegram
 - Для webhook режима: SSL сертификат и домен
 
+## Команды качества
+
+Базовый набор команд для локальной проверки (AI-first bootstrap):
+
+```bash
+just test       # Полный запуск тестов (можно передать аргументы: just test "-q")
+just test-fast  # Быстрая выборка smoke-тестов
+just lint       # Ruff lint (стартовая область: кастомизации + key tests)
+just fmt        # Ruff format для стартовой области
+just types      # Pyright type-check для стартовой области
+just arch-test  # Базовая структурная проверка обязательной документации
+just check      # format --check + lint + types + test-fast
+```
+
 ## Запуск через Docker (для режима одиночного бота)
 
 1. Убедитесь, что у вас установлен Docker и Docker Compose.

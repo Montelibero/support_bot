@@ -4,6 +4,28 @@ IMAGE_NAME := "support_bot"
 default:
     @just --list
 
+# Quality targets (AI-first bootstrap)
+test *args="":
+    uv run --group dev pytest {{args}}
+
+test-fast:
+    uv run --group dev pytest -q tests/test_customization.py tests/test_webhook_updates.py
+
+lint:
+    uv run --group dev ruff check bot/customizations tests/test_customization.py tests/test_webhook_updates.py
+
+fmt:
+    uv run --group dev ruff format bot/customizations tests/test_customization.py tests/test_webhook_updates.py
+
+types:
+    uv run --group dev pyright bot/customizations tests/test_customization.py tests/test_webhook_updates.py
+
+arch-test:
+    @uv run python -c "import pathlib,sys; req=['AGENTS.md','docs/architecture.md','docs/conventions.md','docs/golden-principles.md','docs/glossary.md','docs/exec-plans/active/_template.md','adr/README.md','.linters/README.md']; miss=[p for p in req if not pathlib.Path(p).exists()]; print('arch-test: OK' if not miss else 'arch-test: missing -> ' + ', '.join(miss)); sys.exit(0 if not miss else 1)"
+
+check:
+    uv run --group dev ruff format --check bot/customizations tests/test_customization.py tests/test_webhook_updates.py && just lint && just types && just test-fast
+
 # Docker targets
 build tag="latest":
     # Build Docker image
