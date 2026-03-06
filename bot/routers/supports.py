@@ -15,6 +15,7 @@ from aiogram.types import (
     MessageOriginHiddenUser,
     MessageOriginChat,
     MessageOriginChannel,
+    MediaUnion,
 )
 from loguru import logger
 
@@ -24,6 +25,21 @@ from bot.customizations import get_customization, get_all_routers
 
 router = Router()
 router.include_router(get_all_routers())
+
+
+def _require_text(message: types.Message) -> str:
+    assert message.text is not None
+    return message.text
+
+
+def _require_from_user(message: types.Message) -> types.User:
+    assert message.from_user is not None
+    return message.from_user
+
+
+def _require_master_chat(bot_settings: SupportBotSettings) -> int:
+    assert bot_settings.master_chat is not None
+    return bot_settings.master_chat
 
 
 def _format_forwarded_source(message: types.Message) -> str | None:
@@ -98,7 +114,8 @@ async def cmd_myname(
         if bot_settings.ignore_commands:
             return
         else:
-            data = message.text.strip().split(" ")
+            data = _require_text(message).strip().split(" ")
+            user = _require_from_user(message)
             if len(data) < 2:
                 await message.answer(text="Необходимо указать имя после команды")
             else:
@@ -107,7 +124,7 @@ async def cmd_myname(
                     await message.answer(text=f"Псевдоним {username} уже занят")
                 else:
                     await repo.save_user_name(
-                        user_id=message.from_user.id, user_name=username, bot_id=bot.id
+                        user_id=user.id, user_name=username, bot_id=bot.id
                     )
                     await message.answer(text=f'Имя сохранено как "{username}"')
 
@@ -134,7 +151,7 @@ async def cmd_add_ignore(
         return
 
     # add or remove id to bot_settings.ignore_users
-    data = message.text.strip().split(" ")
+    data = _require_text(message).strip().split(" ")
     if len(data) < 2:
         ignored_list = bot_settings.ignore_users[-5:]
         text = "Необходимо указать ID пользователя после команды\n"
@@ -170,11 +187,12 @@ async def cmd_send(
         if bot_settings.ignore_commands:
             return
         if message.reply_to_message:
-            all_users = message.text.split()
+            all_users = _require_text(message).split()
             good_users = []
             bad_users = []
+            from_user = _require_from_user(message)
 
-            user_info = await repo.get_user_info(message.from_user.id)
+            user_info = await repo.get_user_info(from_user.id)
             if user_info is None:
                 await message.reply(
                     'Сообщение не отправлено. Не найден ваш псевдоним, пришлите "/myname псевдоним" '
@@ -226,13 +244,23 @@ async def cmd_send_file(message: types.Message, bot: Bot, filename):
 
 @router.message(Command(commands=["log"]))
 async def cmd_log(message: types.Message, bot: Bot, config: BotConfig):
-    if message.from_user.id == config.ADMIN_ID and message.chat.type == "private":
+    from_user = message.from_user
+    if (
+        from_user is not None
+        and from_user.id == config.ADMIN_ID
+        and message.chat.type == "private"
+    ):
         await cmd_send_file(message, bot, "SupportBot.log")
 
 
 @router.message(Command(commands=["err"]))
 async def cmd_err(message: types.Message, bot: Bot, config: BotConfig):
-    if message.from_user.id == config.ADMIN_ID and message.chat.type == "private":
+    from_user = message.from_user
+    if (
+        from_user is not None
+        and from_user.id == config.ADMIN_ID
+        and message.chat.type == "private"
+    ):
         await cmd_send_file(message, bot, "SupportBot.err")
 
 
@@ -250,7 +278,13 @@ async def cmd_stats(
 @router.message(Command(commands=["link"]))
 @router.message(Command(commands=["link"]))
 async def cmd_link(message: types.Message, bot: Bot, bot_settings: SupportBotSettings):
-    if message.from_user.id == bot_settings.owner:
+    from_user = message.from_user
+    master_chat = bot_settings.master_chat
+    if (
+        from_user is not None
+        and from_user.id == bot_settings.owner
+        and master_chat is not None
+    ):
         thread_id = message.message_thread_id if message.is_topic_message else None
         thread_info = f" (topic ID: {thread_id})" if thread_id else ""
 
@@ -260,7 +294,7 @@ async def cmd_link(message: types.Message, bot: Bot, bot_settings: SupportBotSet
                     text="Да",
                     callback_data=LinkChatCallbackData(
                         new_chat_id=message.chat.id,
-                        old_chat_id=bot_settings.master_chat,
+                        old_chat_id=master_chat,
                         new_thread_id=thread_id,
                         action="yes",
                     ).pack(),
@@ -269,7 +303,7 @@ async def cmd_link(message: types.Message, bot: Bot, bot_settings: SupportBotSet
                     text="Нет",
                     callback_data=LinkChatCallbackData(
                         new_chat_id=message.chat.id,
-                        old_chat_id=bot_settings.master_chat,
+                        old_chat_id=master_chat,
                         new_thread_id=thread_id,
                         action="no",
                     ).pack(),
@@ -280,7 +314,7 @@ async def cmd_link(message: types.Message, bot: Bot, bot_settings: SupportBotSet
 
         await message.reply(
             f"Do you want to link this chat (ID: {message.chat.id}){thread_info} "
-            f"to master chat (ID: {bot_settings.master_chat})?",
+            f"to master chat (ID: {master_chat})?",
             reply_markup=keyboard,
         )
     else:
@@ -299,8 +333,11 @@ async def cmd_resend(
         f"Support bot message - Username: {(await bot.get_me()).username}, Chat ID: {message.chat.id}"
     )
     if message.chat.id == bot_settings.master_chat:
-        if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
-            user_info = await repo.get_user_info(message.from_user.id)
+        reply_message = message.reply_to_message
+        reply_user = reply_message.from_user if reply_message is not None else None
+        if reply_message and reply_user is not None and reply_user.id == bot.id:
+            from_user = _require_from_user(message)
+            user_info = await repo.get_user_info(from_user.id)
             if user_info is None:
                 await message.reply(
                     'Сообщение не отправлено. Не найден ваш псевдоним, пришлите "/myname псевдоним" '
@@ -309,7 +346,7 @@ async def cmd_resend(
                 return
             resend_info = await repo.get_message_resend_info(
                 bot_id=bot.id,
-                resend_id=message.reply_to_message.message_id,
+                resend_id=reply_message.message_id,
                 chat_for_id=message.chat.id,
             )
             if resend_info is None:
@@ -334,8 +371,10 @@ async def cmd_resend(
         else:
             await cmd_alert_bad(message, bot, bot_settings)
     elif message.chat.type == "private":
+        from_user = _require_from_user(message)
+        master_chat = _require_master_chat(bot_settings)
         user_has_reply = await repo.has_user_received_reply(
-            bot_id=bot.id, user_id=message.from_user.id
+            bot_id=bot.id, user_id=from_user.id
         )
         if not user_has_reply and bot_settings.block_links:
             if message.content_type != ContentType.TEXT:
@@ -357,10 +396,10 @@ async def cmd_resend(
                             "Ссылки и медиа запрещены / Links and media are not allowed"
                         )
                         return
-        if message.from_user.id in bot_settings.ignore_users:
+        if from_user.id in bot_settings.ignore_users:
             return
 
-        user = message.from_user
+        user = from_user
         reply_to_message_id = None
 
         if message.reply_to_message:
@@ -385,7 +424,7 @@ async def cmd_resend(
             message=message,
             bot=bot,
             repo=repo,
-            chat_id=bot_settings.master_chat,
+            chat_id=master_chat,
             text=text,
             reply_to_message_id=reply_to_message_id,
             support_user_id=None,
@@ -414,8 +453,11 @@ async def cmd_edit_msg(
     config: BotConfig,
 ):
     if message.chat.id == bot_settings.master_chat:
-        if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
-            user_info = await repo.get_user_info(message.from_user.id)
+        reply_message = message.reply_to_message
+        reply_user = reply_message.from_user if reply_message is not None else None
+        if reply_message and reply_user is not None and reply_user.id == bot.id:
+            from_user = _require_from_user(message)
+            user_info = await repo.get_user_info(from_user.id)
             if user_info is None:
                 await message.reply(
                     'Сообщение не отправлено. Не найден ваш псевдоним, пришлите "/myname псевдоним" '
@@ -447,6 +489,8 @@ async def cmd_edit_msg(
                     await message.reply(f"Не получилось изменить сообщение =(\n{ex}")
 
     else:
+        user = _require_from_user(message)
+        master_chat = _require_master_chat(bot_settings)
         send_info = await repo.get_message_resend_info(
             bot_id=bot.id, message_id=message.message_id, chat_from_id=message.chat.id
         )
@@ -455,13 +499,12 @@ async def cmd_edit_msg(
         else:
             await message.reply("Не удалось отправить изменения =(")
             return
-        user = message.from_user
 
         await resend_message_plus(
             message=message,
             bot=bot,
             repo=repo,
-            chat_id=bot_settings.master_chat,
+            chat_id=master_chat,
             text=_build_master_chat_text(message, user, "", edited=True),
             reply_to_message_id=reply_to_message_id,
             support_user_id=None,
@@ -476,12 +519,12 @@ async def resend_message_plus(
     repo: Repo,
     chat_id: int,
     text: str,
-    reply_to_message_id,
-    support_user_id,
-    message_thread_id,
+    reply_to_message_id: int | None,
+    support_user_id: int | None,
+    message_thread_id: int | None,
     config: BotConfig,
-    do_exception=False,
-    reply_markup: types.InlineKeyboardMarkup = None,
+    do_exception: bool = False,
+    reply_markup: types.InlineKeyboardMarkup | None = None,
 ):
     try:
         if message.photo:
@@ -496,11 +539,10 @@ async def resend_message_plus(
                 ]
                 await sleep(7)
 
-                new_album = [
-                    types.InputMediaPhoto(media=file_id)
-                    for file_id in config.media_groups[message.media_group_id]
+                album_file_ids = config.media_groups.pop(message.media_group_id, [])
+                new_album: list[MediaUnion] = [
+                    types.InputMediaPhoto(media=file_id) for file_id in album_file_ids
                 ]
-                config.media_groups[message.media_group_id] = None
                 resend_messages = await bot.send_media_group(
                     chat_id=chat_id,
                     message_thread_id=message_thread_id,
@@ -733,7 +775,11 @@ async def resend_message_plus(
                     reply_markup=reply_markup,
                 )
                 return
-        if message.chat.id == config.get_bot_setting(bot.id).master_chat:
+        current_settings = config.get_bot_setting(bot.id)
+        if (
+            current_settings is not None
+            and message.chat.id == current_settings.master_chat
+        ):
             if do_exception:
                 raise ex
             else:
@@ -742,7 +788,11 @@ async def resend_message_plus(
             await message.answer("Send error =(")
 
     except Exception as ex:
-        if message.chat.id == config.get_bot_setting(bot.id).master_chat:
+        current_settings = config.get_bot_setting(bot.id)
+        if (
+            current_settings is not None
+            and message.chat.id == current_settings.master_chat
+        ):
             if do_exception:
                 raise ex
             else:
@@ -926,8 +976,13 @@ async def process_link_callback(
         await callback.answer("Only the owner can use this command", show_alert=True)
         return
 
+    callback_message = callback.message
+    if callback_message is None or not isinstance(callback_message, types.Message):
+        await callback.answer("Operation unavailable", show_alert=True)
+        return
+
     if callback_data.action == "no":
-        await callback.message.delete()
+        await callback_message.delete()
         await callback.answer("Operation cancelled")
     else:
         # Here you would implement the logic to save the link in your database
@@ -936,7 +991,7 @@ async def process_link_callback(
         bot_settings.master_thread = callback_data.new_thread_id
         bot_settings.can_work = False
         await config.update_bot_setting(bot_settings)
-        await callback.message.edit_text(
+        await callback_message.edit_text(
             "Chat successfully linked!\n"
             "Now bot deactivated. "
             "You need to go to the bot admin panel and enable it.",
@@ -951,12 +1006,13 @@ async def on_migrate(
 ):
     old_chat_id = message.chat.id
     new_chat_id = message.migrate_to_chat_id
+    assert new_chat_id is not None
     logger.info(f"Chat {old_chat_id} migrated to {new_chat_id}")
 
     bot_settings.can_work = False
     await config.update_bot_setting(bot_settings)
 
-    await message.bot.send_message(
+    await bot.send_message(
         chat_id=new_chat_id,
         text=f"Chat {old_chat_id} migrated to {new_chat_id}\n"
         f"Bot was stopped. You need relink bot to this chat. "
