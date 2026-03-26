@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from bot.customizations.registry import get_customization
 from bot.customizations.default import DefaultBotCustomization
-from bot.customizations.test_customization import TestCustomization
+from bot.customizations.test_customization import DemoCustomization
 from bot.customizations.helper import HelperCustomization
 from bot.customizations.helper import _parse_helper_channel_message
 from config.bot_config import SupportBotSettings
@@ -27,9 +27,9 @@ def test_registry_default():
 
 
 def test_registry_test_customization():
-    # Test ID 123 returns TestCustomization
+    # Test ID 123 returns DemoCustomization
     customization = get_customization(123)
-    assert isinstance(customization, TestCustomization)
+    assert isinstance(customization, DemoCustomization)
 
 
 def test_registry_helper_customization():
@@ -40,7 +40,7 @@ def test_registry_helper_customization():
 
 @pytest.mark.asyncio
 async def test_test_customization_logic(mock_message, mock_bot_settings):
-    customization = TestCustomization()
+    customization = DemoCustomization()
 
     text = await customization.get_extra_text(
         mock_message.from_user, mock_message, mock_bot_settings

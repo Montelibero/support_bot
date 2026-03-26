@@ -6,7 +6,7 @@ from config.bot_config import SupportBotSettings
 
 
 @register_customization(bot_id=123)
-class TestCustomization(AbstractBotCustomization):
+class DemoCustomization(AbstractBotCustomization):
     def __init__(self):
         self._router = Router()
 
