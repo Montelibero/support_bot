@@ -23,7 +23,7 @@ When `use_local_names` is enabled for a bot, `/myname` saves the name into `bot_
 
 | `use_local_names` | Output |
 |---|---|
-| `True` | `Локальные имена:\n` + names from `bot_settings.local_names.values()` |
+| `True` | `Локальные имена:\n` + names as `name (#ID123)` from `bot_settings.local_names` items |
 | `False` | `Глобальные имена:\n` + names from `repo.get_all_users()` (current behavior) |
 
 ### Name resolution (replies to users)
@@ -39,6 +39,8 @@ Affected handlers:
 - `cmd_resend` (line ~340) — reply from master chat to user
 - `cmd_edit_msg` (line ~460) — edit forwarded reply
 - `cmd_send` (line ~195) — mass send by IDs
+
+**Caller flow note:** In local mode, handlers should still call `repo.get_user_info()` only when `use_local_names=False`. When local mode is on, `user_info` is not fetched — use `from_user.id` directly for `support_user_id` in `resend_message_plus()`.
 
 ### Helper function
 
@@ -79,6 +81,8 @@ Storage format: `{"<user_id_str>": "<display_name>", ...}`
 - Agent has global name but no local name, `use_local_names=True` → error, must set local name
 - Owner toggles `use_local_names` off → bot falls back to global names, local dict preserved but unused
 - `local_names` dict empty on first use → normal, agents register via `/myname`
+- Concurrent `/myname` in local mode — last write wins (acceptable for small support teams)
+- Name deletion — out of scope (no `/delname` exists for global mode either)
 
 ## Testing
 
