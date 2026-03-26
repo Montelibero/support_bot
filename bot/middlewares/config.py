@@ -19,7 +19,7 @@ class ConfigMiddleware(BaseMiddleware):
     ) -> Any:
         data["config"] = self.config
         
-        bot: Bot = data.get("bot")
+        bot: Bot | None = data.get("bot")
         if bot:
             bot_settings = self.config.get_bot_setting(bot.id)
             if bot_settings:

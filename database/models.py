@@ -55,8 +55,8 @@ class BotSettings(Base):
     token: Mapped[str] = mapped_column(String)
     start_message: Mapped[str] = mapped_column(String, default="")
     security_policy: Mapped[str] = mapped_column(String, default="default")
-    master_chat: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    master_thread: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    master_chat: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    master_thread: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     no_start_message: Mapped[bool] = mapped_column(Boolean, default=False)
     special_commands: Mapped[int] = mapped_column(Integer, default=0)
     mark_bad: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -83,7 +83,7 @@ async def save_message_ids(bot_id, user_id, message_id, resend_id, chat_from_id,
         await session.commit()
 
 
-async def get_message_resend_info(bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages:
+async def get_message_resend_info(bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages | None:
     async with session_maker() as session:
         sl = select(Messages).filter(Messages.bot_id == bot_id)
         if message_id:
@@ -118,7 +118,7 @@ async def save_user_name(user_id, user_name, bot_id):
         await session.commit()
 
 
-async def get_user_info(user_id: int) -> Users:
+async def get_user_info(user_id: int) -> Users | None:
     async with session_maker() as session:
         result = await session.execute(select(Users).filter(Users.user_id == user_id))
         return result.scalars().first()
