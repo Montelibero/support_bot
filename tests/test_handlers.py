@@ -1,8 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from aiogram.types import Message
-from bot.routers.supports import cmd_myname, cmd_show_names
-from config.bot_config import bot_config
+from bot.routers.supports import cmd_myname
 
 @pytest.fixture
 def bot():

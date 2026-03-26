@@ -33,7 +33,7 @@ class SupportBotSettings(BaseModel):
     owner: int
     can_work: bool = False
     ignore_commands: bool = False
-    use_local_names: bool = False # todo
+    use_local_names: bool = False
     local_names: dict = {}
     use_auto_reply: bool = False
     block_links: bool = True
