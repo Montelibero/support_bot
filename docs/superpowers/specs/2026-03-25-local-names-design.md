@@ -32,8 +32,8 @@ When a support agent replies in the master chat, the bot resolves their display 
 
 | `use_local_names` | Lookup | On miss |
 |---|---|---|
-| `True` | `bot_settings.local_names.get(str(from_user.id))` | Error: prompt to use `/myname` |
-| `False` | `repo.get_user_info(from_user.id)` (current behavior) | Error: prompt to use `/myname` (current behavior) |
+| `True` | `bot_settings.local_names.get(str(from_user.id))` | Error: prompt to use `/myname` + mention that local names mode is enabled |
+| `False` | `repo.get_user_info(from_user.id)` (current behavior) | Error: prompt to use `/myname` + mention that global names mode is used |
 
 Affected handlers:
 - `cmd_resend` (line ~340) — reply from master chat to user
