@@ -87,6 +87,29 @@ def _build_master_chat_text(
     )
 
 
+def _resolve_agent_name(
+    user_id: int,
+    bot_settings: SupportBotSettings,
+    user_info: object | None,
+) -> str | None:
+    """Return agent display name or None if not set."""
+    if bot_settings.use_local_names:
+        return bot_settings.local_names.get(str(user_id))
+    if user_info is not None:
+        return user_info.user_name  # type: ignore[union-attr]
+    return None
+
+
+def _no_name_error_text(use_local_names: bool) -> str:
+    """Build error message when agent has no pseudonym."""
+    mode = "включены локальные имена" if use_local_names else "используются глобальные имена"
+    return (
+        f'Сообщение не отправлено. Не найден ваш псевдоним ({mode}), '
+        f'пришлите "/myname псевдоним" и повторите ваш ответ. '
+        f"/show_names покажет занятые псевдонимы"
+    )
+
+
 class LinkChatCallbackData(CallbackData, prefix="link_chat"):
     old_chat_id: int
     new_chat_id: int
