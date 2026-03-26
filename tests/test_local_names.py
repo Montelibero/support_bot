@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from bot.routers.supports import _resolve_agent_name, _no_name_error_text
-from bot.routers.supports import cmd_myname, cmd_show_names
+from bot.routers.supports import cmd_myname, cmd_show_names, cmd_resend
 from config.bot_config import BotConfig
 
 
@@ -61,7 +61,7 @@ def test_error_text_global_mode():
 
 @pytest.fixture
 def bot():
-    b = MagicMock()
+    b = AsyncMock()
     b.id = 12345
     return b
 
@@ -184,3 +184,135 @@ async def test_show_names_global(bot, repo):
     text = msg.answer.call_args[1]["text"]
     assert "Глобальные имена" in text
     assert "GlobalAlex" in text
+
+
+@pytest.mark.asyncio
+async def test_resend_local_name_resolves(bot, repo, config):
+    """When use_local_names=True and local name exists, reply is sent."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.master_thread = None
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {"111": "Локал"}
+    settings.mark_bad = False
+    settings.use_auto_reply = False
+    settings.block_links = False
+    settings.ignore_users = []
+
+    reply_msg = MagicMock()
+    reply_msg.from_user = MagicMock()
+    reply_msg.from_user.id = bot.id
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.chat.type = "supergroup"
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.reply_to_message = reply_msg
+    msg.html_text = "Ваш ответ"
+    msg.text = "Ваш ответ"
+    msg.photo = None
+    msg.document = None
+    msg.sticker = None
+    msg.audio = None
+    msg.video = None
+    msg.voice = None
+    msg.video_note = None
+    msg.animation = None
+    msg.location = None
+    msg.contact = None
+    msg.venue = None
+    msg.media_group_id = None
+
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": None,
+        "message_id": 50,
+        "resend_id": reply_msg.message_id,
+        "chat_from_id": 999,
+        "chat_for_id": -100,
+    })
+
+    await cmd_resend(msg, bot, repo, settings, config)
+
+    assert not msg.reply.called or "псевдоним" not in msg.reply.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_resend_global_name_missing_error(bot, repo, config):
+    """When use_local_names=False and no global name → error mentioning global mode."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.master_thread = None
+    settings.ignore_commands = False
+    settings.use_local_names = False
+    settings.local_names = {}
+    settings.mark_bad = False
+
+    reply_msg = MagicMock()
+    reply_msg.from_user = MagicMock()
+    reply_msg.from_user.id = bot.id
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.reply_to_message = reply_msg
+
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": None,
+        "message_id": 50,
+        "resend_id": reply_msg.message_id,
+        "chat_from_id": 999,
+        "chat_for_id": -100,
+    })
+
+    await cmd_resend(msg, bot, repo, settings, config)
+
+    msg.reply.assert_called_once()
+    error_text = msg.reply.call_args[0][0]
+    assert "глобальные имена" in error_text.lower()
+    assert "/myname" in error_text
+
+
+@pytest.mark.asyncio
+async def test_resend_local_name_missing_error(bot, repo, config):
+    """When use_local_names=True but no local name → error mentioning local mode."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.master_thread = None
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {}
+    settings.mark_bad = False
+
+    reply_msg = MagicMock()
+    reply_msg.from_user = MagicMock()
+    reply_msg.from_user.id = bot.id
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.reply_to_message = reply_msg
+
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": None,
+        "message_id": 50,
+        "resend_id": reply_msg.message_id,
+        "chat_from_id": 999,
+        "chat_for_id": -100,
+    })
+
+    await cmd_resend(msg, bot, repo, settings, config)
+
+    msg.reply.assert_called_once()
+    error_text = msg.reply.call_args[0][0]
+    assert "локальные имена" in error_text.lower()
+    assert "/myname" in error_text
