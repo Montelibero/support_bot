@@ -317,12 +317,13 @@ async def cmd_err(message: types.Message, bot: Bot, config: BotConfig):
 async def cmd_stats(
     message: types.Message, bot: Bot, repo: Repo, bot_settings: SupportBotSettings
 ):
-    if message.chat.id == bot_settings.master_chat:
+    master_chat = bot_settings.master_chat
+    if message.chat.id == master_chat and master_chat is not None:
         agent_counts = await repo.get_agent_message_counts(
-            bot_id=bot.id, master_chat_id=bot_settings.master_chat
+            bot_id=bot.id, master_chat_id=master_chat
         )
         total_messages = await repo.get_total_user_messages(
-            bot_id=bot.id, master_chat_id=bot_settings.master_chat
+            bot_id=bot.id, master_chat_id=master_chat
         )
 
         result = []

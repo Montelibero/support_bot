@@ -11,7 +11,7 @@ class Repo:
                              chat_from_id=chat_from_id, chat_for_id=chat_for_id))
         await self.session.commit()
 
-    async def get_message_resend_info(self, bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages:
+    async def get_message_resend_info(self, bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages | None:
         sl = select(Messages).filter(Messages.bot_id == bot_id)
         if message_id:
             sl = sl.filter(Messages.message_id == message_id)
@@ -40,7 +40,7 @@ class Repo:
             self.session.add(Users(bot_id=bot_id, user_id=user_id, user_name=user_name))
         await self.session.commit()
 
-    async def get_user_info(self, user_id: int) -> Users:
+    async def get_user_info(self, user_id: int) -> Users | None:
         result = await self.session.execute(select(Users).filter(Users.user_id == user_id))
         return result.scalars().first()
 
