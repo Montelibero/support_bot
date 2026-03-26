@@ -3,7 +3,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List
 
-import asyncio
 
 from aiogram import Bot
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
@@ -137,8 +136,10 @@ class BotConfig:
                     }
                     
                     # Handle potential edge cases where JSON fields are empty or none
-                    if bot_dict["local_names"] is None: bot_dict["local_names"] = {}
-                    if bot_dict["ignore_users"] is None: bot_dict["ignore_users"] = []
+                    if bot_dict["local_names"] is None:
+                        bot_dict["local_names"] = {}
+                    if bot_dict["ignore_users"] is None:
+                        bot_dict["ignore_users"] = []
 
                     self.json_config[str(bot_id)] = bot_dict
                     

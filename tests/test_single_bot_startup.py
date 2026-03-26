@@ -1,6 +1,4 @@
-import asyncio
 from unittest.mock import patch, MagicMock
-import pytest
 from single_bot import main
 
 @patch("single_bot.asyncio.run")

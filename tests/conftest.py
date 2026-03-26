@@ -1,5 +1,4 @@
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiogram import Dispatcher
@@ -56,11 +55,16 @@ class MockRepo(Repo):
         # Search in self.messages
         # Result should be an object with attributes accessing like .message_id
         for msg in self.messages:
-            if bot_id != msg["bot_id"]: continue
-            if message_id and msg["message_id"] != message_id: continue
-            if resend_id and msg["resend_id"] != resend_id: continue
-            if chat_from_id and msg["chat_from_id"] != chat_from_id: continue
-            if chat_for_id and msg["chat_for_id"] != chat_for_id: continue
+            if bot_id != msg["bot_id"]:
+                continue
+            if message_id and msg["message_id"] != message_id:
+                continue
+            if resend_id and msg["resend_id"] != resend_id:
+                continue
+            if chat_from_id and msg["chat_from_id"] != chat_from_id:
+                continue
+            if chat_for_id and msg["chat_for_id"] != chat_for_id:
+                continue
             
             # Found. enhance generic dict or create SimpleNamespace
             from types import SimpleNamespace
@@ -129,7 +133,7 @@ async def mock_server():
         if request.content_type == 'application/json':
             try:
                 data = await request.json()
-            except:
+            except Exception:
                 data = {}
         else:
             # Handle x-www-form-urlencoded or multipart/form-data

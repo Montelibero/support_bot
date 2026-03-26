@@ -197,7 +197,7 @@ async def mh_change_owner(message: Message, widget: MessageInput, manager: Dialo
     try:
         new_owner_id = int(message.text)
         # Проверяем, есть ли у нас чат с этим пользователем
-        chat = await message.bot.get_chat(new_owner_id)
+        await message.bot.get_chat(new_owner_id)
 
         # Если чат найден, меняем владельца
         old_owner = bot_setting.owner

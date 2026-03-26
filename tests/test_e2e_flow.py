@@ -5,8 +5,6 @@ from aiogram.client.telegram import TelegramAPIServer
 import datetime
 
 from bot.routers.supports import router as support_router
-from config.bot_config import bot_config
-from bot.middlewares.db import DbSessionMiddleware
 from tests.conftest import MOCK_SERVER_URL, TEST_BOT_TOKEN
 
 @pytest.mark.asyncio
@@ -58,7 +56,11 @@ async def test_ticket_flow(mock_server, repo):
     mock_settings.mark_bad = False # Prevent reaction calls
     
     mock_config.get_bot_setting.return_value = mock_settings
+    mock_config.update_bot_setting = AsyncMock()
     mock_config.media_groups = {} # Add media_groups
+
+    mock_settings.use_local_names = True
+    mock_settings.local_names = {}
 
     dp.update.middleware(MockMiddleware(repo, mock_config, mock_settings))
 

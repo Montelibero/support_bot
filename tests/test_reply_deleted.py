@@ -4,7 +4,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiohttp import web
 import datetime
-import logging
 
 from bot.routers.supports import router as support_router
 from tests.conftest import TEST_BOT_TOKEN

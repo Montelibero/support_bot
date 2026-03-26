@@ -4,7 +4,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 import datetime
 from bot.routers.supports import router as support_router
-from config.bot_config import bot_config
 from tests.conftest import MOCK_SERVER_URL, TEST_BOT_TOKEN
 
 @pytest.mark.asyncio
@@ -42,7 +41,7 @@ async def test_edit_message_flow(mock_server, repo):
 
     # Configure Bot Settings
     MASTER_CHAT_ID = -100999
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
     mock_config = MagicMock()
     mock_settings = MagicMock()
     mock_settings.master_chat = MASTER_CHAT_ID

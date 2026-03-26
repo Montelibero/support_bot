@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-import os
 from contextlib import suppress
 
 import sentry_sdk

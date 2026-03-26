@@ -1,5 +1,5 @@
 from aiogram import Router, Bot, F
-from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, ChatMemberUpdated, CallbackQuery
 from aiogram_dialog import DialogManager, StartMode
