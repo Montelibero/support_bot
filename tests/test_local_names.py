@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from bot.routers.supports import _resolve_agent_name, _no_name_error_text
-from bot.routers.supports import cmd_myname, cmd_show_names, cmd_resend
+from bot.routers.supports import cmd_myname, cmd_show_names, cmd_resend, cmd_send, cmd_edit_msg
 from config.bot_config import BotConfig
 
 
@@ -316,3 +316,146 @@ async def test_resend_local_name_missing_error(bot, repo, config):
     error_text = msg.reply.call_args[0][0]
     assert "локальные имена" in error_text.lower()
     assert "/myname" in error_text
+
+
+# --- cmd_send local names tests ---
+
+
+@pytest.mark.asyncio
+async def test_send_local_name_missing_error(bot, repo, config):
+    """cmd_send with use_local_names=True and no local name → error."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {}
+
+    reply_msg = MagicMock()
+    reply_msg.html_text = "Рассылка"
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.text = "/send ID999999"
+    msg.reply_to_message = reply_msg
+
+    await cmd_send(msg, bot, repo, settings, config)
+
+    msg.reply.assert_called_once()
+    error_text = msg.reply.call_args[0][0]
+    assert "локальные имена" in error_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_local_name_resolves(bot, repo, config):
+    """cmd_send with use_local_names=True and local name set → sends."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {"111": "Локал"}
+
+    reply_msg = MagicMock()
+    reply_msg.html_text = "Рассылка"
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.text = "/send ID999999"
+    msg.reply_to_message = reply_msg
+    msg.photo = None
+    msg.document = None
+    msg.sticker = None
+    msg.audio = None
+    msg.video = None
+    msg.voice = None
+    msg.video_note = None
+    msg.animation = None
+    msg.location = None
+    msg.contact = None
+    msg.venue = None
+    msg.media_group_id = None
+
+    await cmd_send(msg, bot, repo, settings, config)
+
+    # Should not get the "no name" error
+    if msg.reply.called:
+        reply_text = msg.reply.call_args[0][0]
+        assert "псевдоним" not in reply_text.lower()
+
+
+# --- cmd_edit_msg local names tests (master chat side) ---
+
+
+@pytest.mark.asyncio
+async def test_edit_msg_local_name_missing_error(bot, repo, config):
+    """cmd_edit_msg in master chat with use_local_names=True and no local name → error."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.master_thread = None
+    settings.use_local_names = True
+    settings.local_names = {}
+    settings.mark_bad = False
+
+    reply_msg = MagicMock()
+    reply_msg.from_user = MagicMock()
+    reply_msg.from_user.id = bot.id
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.reply_to_message = reply_msg
+    msg.message_id = 200
+
+    await cmd_edit_msg(msg, bot, repo, settings, config)
+
+    msg.reply.assert_called_once()
+    error_text = msg.reply.call_args[0][0]
+    assert "локальные имена" in error_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_msg_local_name_resolves(bot, repo, config):
+    """cmd_edit_msg in master chat with local name set → edits with agent_name."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.master_thread = None
+    settings.use_local_names = True
+    settings.local_names = {"111": "Локал"}
+    settings.mark_bad = False
+
+    reply_msg = MagicMock()
+    reply_msg.from_user = MagicMock()
+    reply_msg.from_user.id = bot.id
+
+    msg = AsyncMock()
+    msg.chat = MagicMock()
+    msg.chat.id = -100
+    msg.from_user = MagicMock()
+    msg.from_user.id = 111
+    msg.reply_to_message = reply_msg
+    msg.message_id = 200
+    msg.html_text = "Отредактированный ответ"
+
+    # Seed message history
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": None,
+        "message_id": 200,
+        "resend_id": 300,
+        "chat_from_id": -100,
+        "chat_for_id": 999,
+    })
+
+    await cmd_edit_msg(msg, bot, repo, settings, config)
+
+    # bot.edit_message_text should be called with text containing agent name
+    bot.edit_message_text.assert_awaited_once()
+    call_kwargs = bot.edit_message_text.call_args[1]
+    assert "Локал" in call_kwargs["text"]
