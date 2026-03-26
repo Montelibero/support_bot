@@ -131,25 +131,40 @@ async def cmd_security_policy(
 
 @router.message(Command(commands=["myname"]))
 async def cmd_myname(
-    message: types.Message, bot: Bot, repo: Repo, bot_settings: SupportBotSettings
+    message: types.Message,
+    bot: Bot,
+    repo: Repo,
+    bot_settings: SupportBotSettings,
+    config: BotConfig,
 ):
-    if message.chat.id == bot_settings.master_chat:
-        if bot_settings.ignore_commands:
+    if message.chat.id != bot_settings.master_chat:
+        return
+    if bot_settings.ignore_commands:
+        return
+
+    data = _require_text(message).strip().split(" ")
+    user = _require_from_user(message)
+    if len(data) < 2:
+        await message.answer(text="Необходимо указать имя после команды")
+        return
+
+    username = " ".join(data[1:])
+
+    if bot_settings.use_local_names:
+        if username in bot_settings.local_names.values():
+            await message.answer(text=f"Псевдоним {username} уже занят")
             return
-        else:
-            data = _require_text(message).strip().split(" ")
-            user = _require_from_user(message)
-            if len(data) < 2:
-                await message.answer(text="Необходимо указать имя после команды")
-            else:
-                username = " ".join(data[1:])
-                if username in await repo.get_all_users():
-                    await message.answer(text=f"Псевдоним {username} уже занят")
-                else:
-                    await repo.save_user_name(
-                        user_id=user.id, user_name=username, bot_id=bot.id
-                    )
-                    await message.answer(text=f'Имя сохранено как "{username}"')
+        bot_settings.local_names[str(user.id)] = username
+        await config.update_bot_setting(bot_settings)
+        await message.answer(text=f'Имя сохранено как "{username}" (локально для этого бота)')
+    else:
+        if username in await repo.get_all_users():
+            await message.answer(text=f"Псевдоним {username} уже занят")
+            return
+        await repo.save_user_name(
+            user_id=user.id, user_name=username, bot_id=bot.id
+        )
+        await message.answer(text=f'Имя сохранено как "{username}" (глобально)')
 
 
 @router.message(Command(commands=["show_names"]))

@@ -1,7 +1,9 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 from bot.routers.supports import _resolve_agent_name, _no_name_error_text
+from bot.routers.supports import cmd_myname
+from config.bot_config import BotConfig
 
 
 @pytest.fixture
@@ -55,3 +57,96 @@ def test_error_text_global_mode():
     text = _no_name_error_text(use_local_names=False)
     assert "глобальные имена" in text.lower()
     assert "/myname" in text
+
+
+@pytest.fixture
+def bot():
+    b = MagicMock()
+    b.id = 12345
+    return b
+
+
+@pytest.fixture
+def repo():
+    from tests.conftest import MockRepo
+    return MockRepo()
+
+
+@pytest.fixture
+def config():
+    c = MagicMock(spec=BotConfig)
+    c.update_bot_setting = AsyncMock()
+    return c
+
+
+def _make_message(text, chat_id, user_id=111):
+    msg = AsyncMock()
+    msg.text = text
+    msg.from_user = MagicMock()
+    msg.from_user.id = user_id
+    msg.chat = MagicMock()
+    msg.chat.id = chat_id
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_myname_local_saves_to_settings(bot, repo, config):
+    settings = MagicMock()
+    settings.master_chat = 222
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {}
+
+    msg = _make_message("/myname Локальный", 222)
+    await cmd_myname(msg, bot, repo, settings, config)
+
+    assert settings.local_names[str(msg.from_user.id)] == "Локальный"
+    config.update_bot_setting.assert_awaited_once_with(settings)
+    assert "локально" in msg.answer.call_args[1]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_myname_local_duplicate_rejected(bot, repo, config):
+    settings = MagicMock()
+    settings.master_chat = 222
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {"999": "Занято"}
+
+    msg = _make_message("/myname Занято", 222)
+    await cmd_myname(msg, bot, repo, settings, config)
+
+    assert str(msg.from_user.id) not in settings.local_names
+    assert "занят" in msg.answer.call_args[1]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_myname_global_shows_label(bot, repo, config):
+    settings = MagicMock()
+    settings.master_chat = 222
+    settings.ignore_commands = False
+    settings.use_local_names = False
+    settings.local_names = {}
+
+    msg = _make_message("/myname Глобал", 222)
+    await cmd_myname(msg, bot, repo, settings, config)
+
+    assert 111 in repo.users
+    assert "глобально" in msg.answer.call_args[1]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_myname_local_allows_globally_existing_name(bot, repo, config):
+    """Name exists globally but not locally → allowed in local mode."""
+    repo.users[999] = "Занято"  # global name exists
+    settings = MagicMock()
+    settings.master_chat = 222
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {}
+
+    msg = _make_message("/myname Занято", 222)
+    await cmd_myname(msg, bot, repo, settings, config)
+
+    assert settings.local_names[str(msg.from_user.id)] == "Занято"
+    assert "локально" in msg.answer.call_args[1]["text"].lower()
