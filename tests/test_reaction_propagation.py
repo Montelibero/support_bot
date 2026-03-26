@@ -1,4 +1,5 @@
 
+import datetime
 import pytest
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import MessageReactionUpdated, ReactionTypeEmoji, Chat, User
@@ -50,7 +51,7 @@ async def test_reaction_flow(repo):
             chat=Chat(id=MASTER_ID, type='supergroup'),
             message_id=200,
             user=User(id=888, is_bot=False, first_name="Admin"),
-            date=1234567890,
+            date=datetime.datetime.fromtimestamp(1234567890),
             old_reaction=[],
             new_reaction=[ReactionTypeEmoji(emoji='🔥')]
         )
@@ -91,7 +92,7 @@ async def test_reaction_flow(repo):
             chat=Chat(id=USER_ID, type='private'),
             message_id=100,
             user=User(id=USER_ID, is_bot=False, first_name="User"),
-            date=1234567890,
+            date=datetime.datetime.fromtimestamp(1234567890),
             old_reaction=[],
             new_reaction=[ReactionTypeEmoji(emoji='❤️')]
         )

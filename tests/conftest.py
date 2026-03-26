@@ -5,6 +5,7 @@ from aiogram import Dispatcher
 from aiogram_dialog import setup_dialogs
 
 from bot.routers.supports import router as support_router
+from database.models import Messages
 from database.repositories import Repo
 
 # Constants for Mock Server
@@ -51,7 +52,7 @@ class MockRepo(Repo):
             "chat_for_id": chat_for_id
         })
 
-    async def get_message_resend_info(self, bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None):
+    async def get_message_resend_info(self, bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages | None:  # type: ignore[override]
         # Search in self.messages
         # Result should be an object with attributes accessing like .message_id
         for msg in self.messages:
@@ -68,7 +69,7 @@ class MockRepo(Repo):
             
             # Found. enhance generic dict or create SimpleNamespace
             from types import SimpleNamespace
-            return SimpleNamespace(**msg)
+            return SimpleNamespace(**msg)  # type: ignore[return-value]
         return None
 
     async def has_user_received_reply(self, bot_id: int, user_id: int) -> bool:

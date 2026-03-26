@@ -1,4 +1,5 @@
 
+import datetime
 import pytest
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import MessageReactionUpdated, ReactionTypeEmoji, Chat, User
@@ -40,7 +41,7 @@ async def test_reaction_matrix(repo):
     update_1a = types.Update(update_id=1, message_reaction=MessageReactionUpdated(
         chat=Chat(id=USER_ID, type='private'), message_id=100,
         user=User(id=USER_ID, is_bot=False, first_name="User"),
-        new_reaction=[ReactionTypeEmoji(emoji='A')], old_reaction=[], date=123
+        new_reaction=[ReactionTypeEmoji(emoji='A')], old_reaction=[], date=datetime.datetime.fromtimestamp(123)
     ))
     await dp.feed_update(bot=bot, update=update_1a)
     assert bot.set_message_reaction.call_count == 2
@@ -51,7 +52,7 @@ async def test_reaction_matrix(repo):
     update_1b = types.Update(update_id=2, message_reaction=MessageReactionUpdated(
         chat=Chat(id=MASTER_ID, type='supergroup'), message_id=200,
         user=User(id=888, is_bot=False, first_name="Admin"),
-        new_reaction=[ReactionTypeEmoji(emoji='B')], old_reaction=[], date=123
+        new_reaction=[ReactionTypeEmoji(emoji='B')], old_reaction=[], date=datetime.datetime.fromtimestamp(123)
     ))
     await dp.feed_update(bot=bot, update=update_1b)
     # Note: Admin reactions on Master chat trigger Ack reaction on User message, so call_count 2 is expected if Ack logic is active
@@ -71,7 +72,7 @@ async def test_reaction_matrix(repo):
     update_2a = types.Update(update_id=3, message_reaction=MessageReactionUpdated(
         chat=Chat(id=USER_ID, type='private'), message_id=400,
         user=User(id=USER_ID, is_bot=False, first_name="User"),
-        new_reaction=[ReactionTypeEmoji(emoji='C')], old_reaction=[], date=123
+        new_reaction=[ReactionTypeEmoji(emoji='C')], old_reaction=[], date=datetime.datetime.fromtimestamp(123)
     ))
     await dp.feed_update(bot=bot, update=update_2a)
     assert bot.set_message_reaction.called, "User reacting to Admin reply failed"
@@ -83,7 +84,7 @@ async def test_reaction_matrix(repo):
     update_2b = types.Update(update_id=4, message_reaction=MessageReactionUpdated(
         chat=Chat(id=MASTER_ID, type='supergroup'), message_id=300,
         user=User(id=888, is_bot=False, first_name="Admin"),
-        new_reaction=[ReactionTypeEmoji(emoji='D')], old_reaction=[], date=123
+        new_reaction=[ReactionTypeEmoji(emoji='D')], old_reaction=[], date=datetime.datetime.fromtimestamp(123)
     ))
     await dp.feed_update(bot=bot, update=update_2b)
     assert bot.set_message_reaction.called, "Admin reacting to their own reply failed"
