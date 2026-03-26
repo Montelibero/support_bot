@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from bot.routers.supports import _resolve_agent_name, _no_name_error_text
-from bot.routers.supports import cmd_myname
+from bot.routers.supports import cmd_myname, cmd_show_names
 from config.bot_config import BotConfig
 
 
@@ -150,3 +150,37 @@ async def test_myname_local_allows_globally_existing_name(bot, repo, config):
 
     assert settings.local_names[str(msg.from_user.id)] == "Занято"
     assert "локально" in msg.answer.call_args[1]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_show_names_local(bot, repo):
+    settings = MagicMock()
+    settings.master_chat = 222
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {"111": "Алексей", "222": "Мария"}
+
+    msg = _make_message("/show_names", 222)
+    await cmd_show_names(msg, bot, repo, settings)
+
+    text = msg.answer.call_args[1]["text"]
+    assert "Локальные имена" in text
+    assert "Алексей" in text
+    assert "Мария" in text
+    assert "#ID" in text
+
+
+@pytest.mark.asyncio
+async def test_show_names_global(bot, repo):
+    repo.users = {111: "GlobalAlex"}
+    settings = MagicMock()
+    settings.master_chat = 222
+    settings.ignore_commands = False
+    settings.use_local_names = False
+
+    msg = _make_message("/show_names", 222)
+    await cmd_show_names(msg, bot, repo, settings)
+
+    text = msg.answer.call_args[1]["text"]
+    assert "Глобальные имена" in text
+    assert "GlobalAlex" in text

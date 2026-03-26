@@ -171,11 +171,23 @@ async def cmd_myname(
 async def cmd_show_names(
     message: types.Message, bot: Bot, repo: Repo, bot_settings: SupportBotSettings
 ):
-    if message.chat.id == bot_settings.master_chat:
-        if bot_settings.ignore_commands:
-            return
+    if message.chat.id != bot_settings.master_chat:
+        return
+    if bot_settings.ignore_commands:
+        return
+
+    if bot_settings.use_local_names:
+        if bot_settings.local_names:
+            names = " ".join(
+                f"{name} (#ID{uid})" for uid, name in bot_settings.local_names.items()
+            )
         else:
-            await message.answer(text=" ".join(await repo.get_all_users()))
+            names = "(пусто)"
+        await message.answer(text=f"Локальные имена:\n{names}")
+    else:
+        all_users = await repo.get_all_users()
+        label = "Глобальные имена:\n" if all_users else ""
+        await message.answer(text=f"{label}{' '.join(all_users)}")
 
 
 @router.message(Command(commands=["ignore"]))
