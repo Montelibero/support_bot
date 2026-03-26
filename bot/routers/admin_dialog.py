@@ -27,11 +27,11 @@ class AdminBotStates(StatesGroup):
 
 default_start_message = "Hello!\nAsk your question and we will answer you as soon as possible."
 default_security_policy = """<b>Политика конфиденциальности</b>\n\n
-Этот бот не хранит ваши сообщения, имя пользователя и @username. 
-При отправке сообщения (кроме команд /start и /security_policy) ваш идентификатор пользователя 
-записывается в кеш на некоторое время и потом удаляется из кеша. 
+Этот бот не хранит ваши сообщения, имя пользователя и @username.
+При отправке сообщения (кроме команд /start и /security_policy) ваш идентификатор пользователя
+записывается в кеш на некоторое время и потом удаляется из кеша.
 Этот идентификатор используется только для общения с оператором; \n\n
-При отправке сообщения (кроме команд /start и /security_policy) оператор видит ваши имя пользователя, 
+При отправке сообщения (кроме команд /start и /security_policy) оператор видит ваши имя пользователя,
 @username и идентификатор пользователя."""
 
 
@@ -44,7 +44,8 @@ async def choose_bot(callback: CallbackQuery, widget: Select, dialog_manager: Di
 
 async def get_bots(event_from_user: User, dialog_manager: DialogManager, **kwargs):
     # pprint(kwargs)
-    config: BotConfig = dialog_manager.middleware_data.get('config')
+    config = dialog_manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bots = []
     user_bots = [item for item in config.get_bot_settings() if item.owner == event_from_user.id]
     for item in sorted(user_bots, key=lambda bot: (bot.username or "").lower()):
@@ -62,23 +63,27 @@ async def mh_get_token(message: Message, widget: MessageInput, dialog_manager: D
         if not token or not token.strip():
             await message.answer('Пожалуйста, введите токен бота.')
             return
-            
+
         validate_token(token)
 
         async with Bot(token=token) as bot:
             bot_info = await bot.get_me()
 
         # Check if bot already exists
-        config: BotConfig = dialog_manager.middleware_data.get('config')
+        config = dialog_manager.middleware_data.get('config')
+        assert isinstance(config, BotConfig)
         existing_bot = config.get_bot_setting(bot_info.id)
         if existing_bot:
             await message.answer(f'Бот @{bot_info.username} уже существует в системе.')
             return
 
+        if message.from_user is None:
+            return
+
         # Create new bot settings with default values
         new_bot = SupportBotSettings(
             id=bot_info.id,
-            username=bot_info.username,
+            username=bot_info.username or "",
             token=token,
             start_message=default_start_message,
             security_policy=default_security_policy,
@@ -111,8 +116,14 @@ async def mh_change_chat(message: Message, widget: MessageInput, dialog_manager:
     state = dialog_manager.middleware_data['state']
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = dialog_manager.middleware_data.get('config')
+    config = dialog_manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
+
+    if message.text is None:
+        return
 
     chat_data = message.text.split()
     if len(chat_data) >= 1:
@@ -122,9 +133,9 @@ async def mh_change_chat(message: Message, widget: MessageInput, dialog_manager:
             if not str(chat_id).startswith('-100') and chat_id > 0:
                 await message.answer("ID чата должен начинаться с -100 для групповых чатов. Пожалуйста, проверьте ID.")
                 return
-                
+
             topic_id = int(chat_data[1]) if len(chat_data) > 1 else None
-            
+
             bot_setting.master_chat = chat_id
             bot_setting.master_thread = topic_id
             await config.update_bot_setting(bot_setting)
@@ -149,8 +160,14 @@ async def mh_change_start_message(message: Message, widget: MessageInput, dialog
     state = dialog_manager.middleware_data['state']
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = dialog_manager.middleware_data.get('config')
+    config = dialog_manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
+
+    if message.text is None:
+        return
 
     bot_setting.start_message = message.text
     await config.update_bot_setting(bot_setting)
@@ -163,8 +180,14 @@ async def mh_change_security_policy(message: Message, widget: MessageInput, dial
     state = dialog_manager.middleware_data['state']
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = dialog_manager.middleware_data.get('config')
+    config = dialog_manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
+
+    if message.text is None:
+        return
 
     bot_setting.security_policy = message.text
     await config.update_bot_setting(bot_setting)
@@ -177,8 +200,14 @@ async def mh_change_auto_reply(message: Message, widget: MessageInput, dialog_ma
     state = dialog_manager.middleware_data['state']
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = dialog_manager.middleware_data.get('config')
+    config = dialog_manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
+
+    if message.text is None:
+        return
 
     bot_setting.auto_reply = message.text
     await config.update_bot_setting(bot_setting)
@@ -191,13 +220,19 @@ async def mh_change_owner(message: Message, widget: MessageInput, manager: Dialo
     state = manager.middleware_data['state']
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = manager.middleware_data.get('config')
+    config = manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
+
+    if message.text is None:
+        return
 
     try:
         new_owner_id = int(message.text)
         # Проверяем, есть ли у нас чат с этим пользователем
-        await message.bot.get_chat(new_owner_id)
+        await message.bot.get_chat(new_owner_id)  # type: ignore[union-attr]
 
         # Если чат найден, меняем владельца
         old_owner = bot_setting.owner
@@ -205,8 +240,8 @@ async def mh_change_owner(message: Message, widget: MessageInput, manager: Dialo
         await config.update_bot_setting(bot_setting)
 
         # Отправляем сообщения новому и старому владельцу
-        await message.bot.send_message(new_owner_id, f"Вам передали бота @{bot_setting.username}")
-        await message.bot.send_message(old_owner,
+        await message.bot.send_message(new_owner_id, f"Вам передали бота @{bot_setting.username}")  # type: ignore[union-attr]
+        await message.bot.send_message(old_owner,  # type: ignore[union-attr]
                                        f"Вы передали бота @{bot_setting.username} пользователю с ID {new_owner_id}")
 
         await message.answer("Бот успешно передан новому владельцу.")
@@ -220,8 +255,13 @@ async def mh_change_owner(message: Message, widget: MessageInput, manager: Dialo
 async def info_getter(dialog_manager: DialogManager, state: FSMContext, **kwargs):
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = dialog_manager.middleware_data.get('config')
-    bot_setting = config.get_bot_setting(bot_id)
+    if bot_id is None:
+        return {}
+    config = dialog_manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
+    bot_setting = config.get_bot_setting(int(bot_id))
+    if bot_setting is None:
+        return {}
 
     can_work_text = '[✔️]' if bot_setting.can_work else '[❌]'
     mark_bad_text = '[✔️]' if bot_setting.mark_bad else '[❌]'
@@ -272,8 +312,11 @@ async def button_clicked(callback: CallbackQuery, button: Button, manager: Dialo
     state = manager.middleware_data['state']
     data = await state.get_data()
     bot_id = data.get('bot_id')
-    config: BotConfig = manager.middleware_data.get('config')
+    config = manager.middleware_data.get('config')
+    assert isinstance(config, BotConfig)
     bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
 
     if button.widget_id == 'mark_bad':
         bot_setting.mark_bad = not bot_setting.mark_bad
@@ -295,6 +338,9 @@ async def button_clicked(callback: CallbackQuery, button: Button, manager: Dialo
             try:
                 async with Bot(token=bot_setting.token) as temp_bot:
                     try:
+                        if bot_setting.master_chat is None:
+                            await callback.answer("Чат не настроен. Укажите ID чата.", show_alert=True)
+                            return
                         await temp_bot.send_message(chat_id=bot_setting.master_chat,
                                                 text="Проверка настроек чата",
                                                 message_thread_id=bot_setting.master_thread)
@@ -326,7 +372,8 @@ async def button_clicked(callback: CallbackQuery, button: Button, manager: Dialo
     #         await delete_webhook(temp_bot)
     #     await callback.answer("Настройки чата изменены. Бот деактивирован.")
 
-    await manager.update({button.widget_id: getattr(bot_setting, button.widget_id)})
+    if button.widget_id is not None:
+        await manager.update({button.widget_id: getattr(bot_setting, button.widget_id)})
 
 
 window_bot_config = Window(
@@ -403,7 +450,7 @@ window_send_chat_id = Window(
 
 window_choose_bot = Window(
     Const(text='Выберите бота для редактирования настроек,'),
-    Const(text='либо создайте новый'),
+    Const(text='либо создайте новый'),
     Column(
         Select(
             Format('{item[0]}'),
