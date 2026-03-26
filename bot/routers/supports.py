@@ -318,10 +318,25 @@ async def cmd_stats(
     message: types.Message, bot: Bot, repo: Repo, bot_settings: SupportBotSettings
 ):
     if message.chat.id == bot_settings.master_chat:
-        data = await repo.get_stats(
+        agent_counts = await repo.get_agent_message_counts(
             bot_id=bot.id, master_chat_id=bot_settings.master_chat
         )
-        await message.reply(text="\n".join(data))
+        total_messages = await repo.get_total_user_messages(
+            bot_id=bot.id, master_chat_id=bot_settings.master_chat
+        )
+
+        result = []
+        for user_id, count in agent_counts:
+            if bot_settings.use_local_names:
+                name = bot_settings.local_names.get(str(user_id))
+            else:
+                user_info = await repo.get_user_info(user_id)
+                name = user_info.user_name if user_info else None
+            display = name or f"#ID{user_id}"
+            result.append(f"{display}: {count} messages")
+        result.append(f"Total messages from users: {total_messages}")
+
+        await message.reply(text="\n".join(result))
 
 
 @router.message(Command(commands=["link"]))

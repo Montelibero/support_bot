@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from bot.routers.supports import _resolve_agent_name, _no_name_error_text
-from bot.routers.supports import cmd_myname, cmd_show_names, cmd_resend, cmd_send, cmd_edit_msg
+from bot.routers.supports import cmd_myname, cmd_show_names, cmd_resend, cmd_send, cmd_edit_msg, cmd_stats
 from config.bot_config import BotConfig
 
 
@@ -459,3 +459,94 @@ async def test_edit_msg_local_name_resolves(bot, repo, config):
     bot.edit_message_text.assert_awaited_once()
     call_kwargs = bot.edit_message_text.call_args[1]
     assert "Локал" in call_kwargs["text"]
+
+
+# --- cmd_stats local names tests ---
+
+
+@pytest.mark.asyncio
+async def test_stats_local_names_resolves(bot, repo):
+    """Stats should resolve agent names from local_names when enabled."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {"111": "Алексей", "222": "Мария"}
+
+    # Seed messages: agent 111 sent 2 replies, agent 222 sent 1
+    for _ in range(2):
+        repo.messages.append({
+            "bot_id": bot.id,
+            "user_id": 111,
+            "message_id": 1,
+            "resend_id": 2,
+            "chat_from_id": -100,
+            "chat_for_id": 999,
+        })
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": 222,
+        "message_id": 3,
+        "resend_id": 4,
+        "chat_from_id": -100,
+        "chat_for_id": 999,
+    })
+
+    msg = _make_message("/stats", -100)
+    await cmd_stats(msg, bot, repo, settings)
+
+    text = msg.reply.call_args[1]["text"]
+    assert "Алексей" in text
+    assert "Мария" in text
+
+
+@pytest.mark.asyncio
+async def test_stats_global_names_resolves(bot, repo):
+    """Stats should resolve agent names from Users table when local names disabled."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.ignore_commands = False
+    settings.use_local_names = False
+    settings.local_names = {}
+
+    repo.users[111] = "GlobalAlex"
+
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": 111,
+        "message_id": 1,
+        "resend_id": 2,
+        "chat_from_id": -100,
+        "chat_for_id": 999,
+    })
+
+    msg = _make_message("/stats", -100)
+    await cmd_stats(msg, bot, repo, settings)
+
+    text = msg.reply.call_args[1]["text"]
+    assert "GlobalAlex" in text
+
+
+@pytest.mark.asyncio
+async def test_stats_unknown_agent_shows_id(bot, repo):
+    """Agent with no name in either mode shows as #ID."""
+    settings = MagicMock()
+    settings.master_chat = -100
+    settings.ignore_commands = False
+    settings.use_local_names = True
+    settings.local_names = {}
+
+    repo.messages.append({
+        "bot_id": bot.id,
+        "user_id": 999,
+        "message_id": 1,
+        "resend_id": 2,
+        "chat_from_id": -100,
+        "chat_for_id": 888,
+    })
+
+    msg = _make_message("/stats", -100)
+    await cmd_stats(msg, bot, repo, settings)
+
+    text = msg.reply.call_args[1]["text"]
+    assert "#ID999" in text

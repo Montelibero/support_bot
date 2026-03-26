@@ -53,38 +53,31 @@ class Repo:
             result.append(user.user_name)
         return result
 
-    async def get_stats(self, bot_id, master_chat_id) -> list:
-        # Получаем статистику по пользователям
-        stmt_users = (
+    async def get_agent_message_counts(self, bot_id: int, master_chat_id: int) -> list[tuple[int, int]]:
+        """Return [(user_id, message_count)] for agent replies from master chat."""
+        stmt = (
             select(
-                Users.user_name,
-                func.count(Messages.user_id).label("message_count")
+                Messages.user_id,
+                func.count(Messages.record_id).label("message_count"),
             )
-            .join(Messages, Users.user_id == Messages.user_id)
             .filter(
                 Messages.bot_id == bot_id,
-                Messages.chat_from_id == master_chat_id
+                Messages.chat_from_id == master_chat_id,
+                Messages.user_id.isnot(None),
             )
-            .group_by(Users.user_name)
+            .group_by(Messages.user_id)
         )
-        users_result = await self.session.execute(stmt_users)
-        user_stats = users_result.all()
+        result = await self.session.execute(stmt)
+        return [(row[0], row[1]) for row in result.all()]
 
-        # Получаем общее количество сообщений
-        stmt_total = (
+    async def get_total_user_messages(self, bot_id: int, master_chat_id: int) -> int:
+        """Return total messages sent TO master chat (from users)."""
+        stmt = (
             select(func.count(Messages.record_id))
             .filter(
                 Messages.bot_id == bot_id,
-                Messages.chat_for_id == master_chat_id
+                Messages.chat_for_id == master_chat_id,
             )
         )
-        total_result = await self.session.execute(stmt_total)
-        total_messages = total_result.scalar()
-
-        # Создаем список результатов
-        result = []
-        for user_name, message_count in user_stats:
-            result.append(f"{user_name}: {message_count} messages")
-        result.append(f"Total messages from users: {total_messages}")
-
-        return result
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0

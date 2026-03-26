@@ -77,6 +77,20 @@ class MockRepo(Repo):
                  return True
         return False
 
+    async def get_agent_message_counts(self, bot_id: int, master_chat_id: int) -> list[tuple[int, int]]:
+        from collections import Counter
+        counts: Counter[int] = Counter()
+        for msg in self.messages:
+            if msg["bot_id"] == bot_id and msg["chat_from_id"] == master_chat_id and msg["user_id"] is not None:
+                counts[msg["user_id"]] += 1
+        return list(counts.items())
+
+    async def get_total_user_messages(self, bot_id: int, master_chat_id: int) -> int:
+        return sum(
+            1 for msg in self.messages
+            if msg["bot_id"] == bot_id and msg["chat_for_id"] == master_chat_id
+        )
+
 @pytest.fixture
 def repo():
     return MockRepo()
