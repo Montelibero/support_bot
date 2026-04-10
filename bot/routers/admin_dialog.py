@@ -9,6 +9,7 @@ from aiogram_dialog import DialogManager, Dialog, Window
 from aiogram_dialog.widgets.input import MessageInput
 from aiogram_dialog.widgets.kbd import Select, Column, SwitchTo, ManagedCheckbox, Button
 from aiogram_dialog.widgets.text import Const, Format
+from loguru import logger
 
 from config.bot_config import SupportBotSettings, delete_webhook, set_webhook, BotConfig
 
@@ -107,8 +108,10 @@ async def mh_get_token(message: Message, widget: MessageInput, dialog_manager: D
         await dialog_manager.switch_to(AdminBotStates.options)
 
     except (ValueError, TelegramBadRequest) as e:
+        logger.warning(f"Add bot failed — invalid token: {e}")
         await message.answer(f'Некорректный ключ: {str(e)}')
     except Exception as e:
+        logger.exception(f"Add bot failed — unexpected error: {e}")
         await message.answer(f'Произошла ошибка при добавлении бота: {str(e)}')
 
 
@@ -249,6 +252,9 @@ async def mh_change_owner(message: Message, widget: MessageInput, manager: Dialo
     except ValueError:
         await message.answer("Некорректный ID пользователя. Попробуйте еще раз.")
     except Exception as e:
+        logger.exception(
+            f"Transfer bot failed — bot_id={bot_id}, new_owner={message.text!r}: {e}"
+        )
         await message.answer(f"Ошибка при передаче бота: {str(e)}")
 
 
@@ -351,8 +357,15 @@ async def button_clicked(callback: CallbackQuery, button: Button, manager: Dialo
                         await config.update_bot_setting(bot_setting)
                         await callback.answer("Бот успешно активирован!")
                     except TelegramBadRequest as e:
+                        logger.warning(
+                            f"Activate bot — chat access failed — bot_id={bot_id}, "
+                            f"master_chat={bot_setting.master_chat}: {e}"
+                        )
                         await callback.answer(f"Ошибка доступа к чату: {str(e)}", show_alert=True)
             except Exception as e:
+                logger.exception(
+                    f"Activate bot failed — bot_id={bot_id}: {e}"
+                )
                 await callback.answer(f"Ошибка в настройках бота: {str(e)}", show_alert=True)
         else:
             try:
@@ -362,6 +375,7 @@ async def button_clicked(callback: CallbackQuery, button: Button, manager: Dialo
                 await config.update_bot_setting(bot_setting)
                 await callback.answer("Бот деактивирован")
             except Exception as e:
+                logger.exception(f"Deactivate bot failed — bot_id={bot_id}: {e}")
                 await callback.answer(f"Ошибка при деактивации бота: {str(e)}", show_alert=True)
 
     # elif button.widget_id in ['master_chat', 'master_thread']:

@@ -277,8 +277,9 @@ async def cmd_send(
                         good_users.append(str(chat_id))
                     except Exception as ex:
                         bad_users.append(str(chat_id))
-                        logger.info(ex)
-                        pass
+                        logger.warning(
+                            f"cmd_send failed — bot_id={bot.id}, target_chat_id={chat_id}: {ex}"
+                        )
             await message.reply(
                 f"was send to {' '.join(good_users)} \n can`t send to {' '.join(bad_users)}"
             )
@@ -505,7 +506,13 @@ async def cmd_alert_bad(
     message: types.Message, bot: Bot, bot_settings: SupportBotSettings
 ):
     if bot_settings.mark_bad:
-        await message.react([ReactionTypeEmoji(emoji="🙈")])
+        try:
+            await message.react([ReactionTypeEmoji(emoji="🙈")])
+        except TelegramBadRequest as ex:
+            logger.warning(
+                f"Failed to set reaction — bot_id={bot.id}, chat_id={message.chat.id}, "
+                f"chat_title={message.chat.title!r}, message_id={message.message_id}: {ex}"
+            )
 
 
 @router.edited_message()
@@ -548,6 +555,10 @@ async def cmd_edit_msg(
                 if str(ex).find("Bad Request: message is not modified") > 0:
                     pass
                 else:
+                    logger.warning(
+                        f"edit_message_text failed — bot_id={bot.id}, "
+                        f"chat_id={send_info.chat_for_id}, message_id={send_info.resend_id}: {ex}"
+                    )
                     await message.reply(f"Не получилось изменить сообщение =(\n{ex}")
 
     else:
@@ -850,6 +861,10 @@ async def resend_message_plus(
             await message.answer("Send error =(")
 
     except Exception as ex:
+        logger.error(
+            f"resend_message_plus failed — bot_id={bot.id}, src_chat_id={message.chat.id}, "
+            f"dst_chat_id={chat_id}, message_id={message.message_id}: {ex}"
+        )
         current_settings = config.get_bot_setting(bot.id)
         if (
             current_settings is not None
@@ -904,7 +919,11 @@ async def message_reaction(
                     ):
                         pass
                     else:
-                        logger.error(ex)
+                        logger.error(
+                            f"set_message_reaction (admin, no send_info) failed — "
+                            f"bot_id={bot.id}, chat_id={message.chat.id}, "
+                            f"message_id={message.message_id}: {ex}"
+                        )
             return
 
         try:
@@ -938,7 +957,10 @@ async def message_reaction(
             ):
                 pass
             else:
-                logger.error(ex)
+                logger.error(
+                    f"set_message_reaction (admin reply) failed — bot_id={bot.id}, "
+                    f"src_chat_id={message.chat.id}, src_message_id={message.message_id}: {ex}"
+                )
 
     else:
         # Check if User is reacting to their own ticket (message_id=msg_id)
@@ -984,7 +1006,10 @@ async def message_reaction(
                 ):
                     pass
                 else:
-                    logger.error(ex)
+                    logger.error(
+                        f"set_message_reaction (user side) failed — bot_id={bot.id}, "
+                        f"src_chat_id={message.chat.id}, src_message_id={message.message_id}: {ex}"
+                    )
 
 
 @router.my_chat_member()
