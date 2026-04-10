@@ -60,7 +60,9 @@ async def on_my_chat_member(update: ChatMemberUpdated, bot: Bot):
             logger.warning(f"Bot's permissions were kicked in chat {chat.id}")
 
         else:
-            logger.info(f"Bot status changed in chat {chat.id} from {old_status} to {new_status}")
+            logger.info(
+                f"Bot status changed in chat {chat.id} from {old_status} to {new_status}"
+            )
 
 
 @router.message(F.migrate_to_chat_id)
@@ -70,10 +72,12 @@ async def on_migrate(message: Message, bot: Bot):
     logger.info(f"Chat {old_chat_id} migrated to {new_chat_id}")
     if message.bot is None or new_chat_id is None:
         return
-    await message.bot.send_message(chat_id=new_chat_id,
-                                   text=f"Chat {old_chat_id} migrated to {new_chat_id}")
+    await message.bot.send_message(
+        chat_id=new_chat_id, text=f"Chat {old_chat_id} migrated to {new_chat_id}"
+    )
+
 
 @router.callback_query(F.data == "test")
 async def on_start(callback_query: CallbackQuery, bot: Bot):
-    #need to resolve callback_query
+    # need to resolve callback_query
     await callback_query.answer("Hello, world!")

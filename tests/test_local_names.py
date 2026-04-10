@@ -2,7 +2,14 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from bot.routers.supports import _resolve_agent_name, _no_name_error_text
-from bot.routers.supports import cmd_myname, cmd_show_names, cmd_resend, cmd_send, cmd_edit_msg, cmd_stats
+from bot.routers.supports import (
+    cmd_myname,
+    cmd_show_names,
+    cmd_resend,
+    cmd_send,
+    cmd_edit_msg,
+    cmd_stats,
+)
 from config.bot_config import BotConfig
 
 
@@ -33,7 +40,9 @@ def test_resolve_local_name_missing(local_settings):
 def test_resolve_global_name_found(global_settings):
     user_info = MagicMock()
     user_info.user_name = "GlobalName"
-    assert _resolve_agent_name(111, global_settings, user_info=user_info) == "GlobalName"
+    assert (
+        _resolve_agent_name(111, global_settings, user_info=user_info) == "GlobalName"
+    )
 
 
 def test_resolve_global_name_missing(global_settings):
@@ -69,6 +78,7 @@ def bot():
 @pytest.fixture
 def repo():
     from tests.conftest import MockRepo
+
     return MockRepo()
 
 
@@ -226,14 +236,16 @@ async def test_resend_local_name_resolves(bot, repo, config):
     msg.venue = None
     msg.media_group_id = None
 
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": None,
-        "message_id": 50,
-        "resend_id": reply_msg.message_id,
-        "chat_from_id": 999,
-        "chat_for_id": -100,
-    })
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": None,
+            "message_id": 50,
+            "resend_id": reply_msg.message_id,
+            "chat_from_id": 999,
+            "chat_for_id": -100,
+        }
+    )
 
     await cmd_resend(msg, bot, repo, settings, config)
 
@@ -262,14 +274,16 @@ async def test_resend_global_name_missing_error(bot, repo, config):
     msg.from_user.id = 111
     msg.reply_to_message = reply_msg
 
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": None,
-        "message_id": 50,
-        "resend_id": reply_msg.message_id,
-        "chat_from_id": 999,
-        "chat_for_id": -100,
-    })
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": None,
+            "message_id": 50,
+            "resend_id": reply_msg.message_id,
+            "chat_from_id": 999,
+            "chat_for_id": -100,
+        }
+    )
 
     await cmd_resend(msg, bot, repo, settings, config)
 
@@ -301,14 +315,16 @@ async def test_resend_local_name_missing_error(bot, repo, config):
     msg.from_user.id = 111
     msg.reply_to_message = reply_msg
 
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": None,
-        "message_id": 50,
-        "resend_id": reply_msg.message_id,
-        "chat_from_id": 999,
-        "chat_for_id": -100,
-    })
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": None,
+            "message_id": 50,
+            "resend_id": reply_msg.message_id,
+            "chat_from_id": 999,
+            "chat_for_id": -100,
+        }
+    )
 
     await cmd_resend(msg, bot, repo, settings, config)
 
@@ -444,14 +460,16 @@ async def test_edit_msg_local_name_resolves(bot, repo, config):
     msg.html_text = "Отредактированный ответ"
 
     # Seed message history
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": None,
-        "message_id": 200,
-        "resend_id": 300,
-        "chat_from_id": -100,
-        "chat_for_id": 999,
-    })
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": None,
+            "message_id": 200,
+            "resend_id": 300,
+            "chat_from_id": -100,
+            "chat_for_id": 999,
+        }
+    )
 
     await cmd_edit_msg(msg, bot, repo, settings, config)
 
@@ -475,22 +493,26 @@ async def test_stats_local_names_resolves(bot, repo):
 
     # Seed messages: agent 111 sent 2 replies, agent 222 sent 1
     for _ in range(2):
-        repo.messages.append({
+        repo.messages.append(
+            {
+                "bot_id": bot.id,
+                "user_id": 111,
+                "message_id": 1,
+                "resend_id": 2,
+                "chat_from_id": -100,
+                "chat_for_id": 999,
+            }
+        )
+    repo.messages.append(
+        {
             "bot_id": bot.id,
-            "user_id": 111,
-            "message_id": 1,
-            "resend_id": 2,
+            "user_id": 222,
+            "message_id": 3,
+            "resend_id": 4,
             "chat_from_id": -100,
             "chat_for_id": 999,
-        })
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": 222,
-        "message_id": 3,
-        "resend_id": 4,
-        "chat_from_id": -100,
-        "chat_for_id": 999,
-    })
+        }
+    )
 
     msg = _make_message("/stats", -100)
     await cmd_stats(msg, bot, repo, settings)
@@ -511,14 +533,16 @@ async def test_stats_global_names_resolves(bot, repo):
 
     repo.users[111] = "GlobalAlex"
 
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": 111,
-        "message_id": 1,
-        "resend_id": 2,
-        "chat_from_id": -100,
-        "chat_for_id": 999,
-    })
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": 111,
+            "message_id": 1,
+            "resend_id": 2,
+            "chat_from_id": -100,
+            "chat_for_id": 999,
+        }
+    )
 
     msg = _make_message("/stats", -100)
     await cmd_stats(msg, bot, repo, settings)
@@ -536,14 +560,16 @@ async def test_stats_unknown_agent_shows_id(bot, repo):
     settings.use_local_names = True
     settings.local_names = {}
 
-    repo.messages.append({
-        "bot_id": bot.id,
-        "user_id": 999,
-        "message_id": 1,
-        "resend_id": 2,
-        "chat_from_id": -100,
-        "chat_for_id": 888,
-    })
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": 999,
+            "message_id": 1,
+            "resend_id": 2,
+            "chat_from_id": -100,
+            "chat_for_id": 888,
+        }
+    )
 
     msg = _make_message("/stats", -100)
     await cmd_stats(msg, bot, repo, settings)

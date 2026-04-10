@@ -18,11 +18,11 @@ class ConfigMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         data["config"] = self.config
-        
+
         bot: Bot | None = data.get("bot")
         if bot:
             bot_settings = self.config.get_bot_setting(bot.id)
             if bot_settings:
                 data["bot_settings"] = bot_settings
-                
+
         return await handler(event, data)

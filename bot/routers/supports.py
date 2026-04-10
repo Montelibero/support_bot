@@ -102,9 +102,13 @@ def _resolve_agent_name(
 
 def _no_name_error_text(use_local_names: bool) -> str:
     """Build error message when agent has no pseudonym."""
-    mode = "включены локальные имена" if use_local_names else "используются глобальные имена"
+    mode = (
+        "включены локальные имена"
+        if use_local_names
+        else "используются глобальные имена"
+    )
     return (
-        f'Сообщение не отправлено. Не найден ваш псевдоним ({mode}), '
+        f"Сообщение не отправлено. Не найден ваш псевдоним ({mode}), "
         f'пришлите "/myname псевдоним" и повторите ваш ответ. '
         f"/show_names покажет занятые псевдонимы"
     )
@@ -156,14 +160,14 @@ async def cmd_myname(
             return
         bot_settings.local_names[str(user.id)] = username
         await config.update_bot_setting(bot_settings)
-        await message.answer(text=f'Имя сохранено как "{username}" (локально для этого бота)')
+        await message.answer(
+            text=f'Имя сохранено как "{username}" (локально для этого бота)'
+        )
     else:
         if username in await repo.get_all_users():
             await message.answer(text=f"Псевдоним {username} уже занят")
             return
-        await repo.save_user_name(
-            user_id=user.id, user_name=username, bot_id=bot.id
-        )
+        await repo.save_user_name(user_id=user.id, user_name=username, bot_id=bot.id)
         await message.answer(text=f'Имя сохранено как "{username}" (глобально)')
 
 
@@ -242,12 +246,18 @@ async def cmd_send(
             bad_users = []
             from_user = _require_from_user(message)
 
-            user_info = None if bot_settings.use_local_names else await repo.get_user_info(from_user.id)
+            user_info = (
+                None
+                if bot_settings.use_local_names
+                else await repo.get_user_info(from_user.id)
+            )
             agent_name = _resolve_agent_name(from_user.id, bot_settings, user_info)
             if agent_name is None:
                 await message.reply(_no_name_error_text(bot_settings.use_local_names))
                 return
-            support_user_id = from_user.id if bot_settings.use_local_names else user_info.user_id  # type: ignore[union-attr]
+            support_user_id = (
+                from_user.id if bot_settings.use_local_names else user_info.user_id  # type: ignore[union-attr]
+            )
             i = 0
             for user in all_users:
                 user = str(user)
@@ -403,12 +413,18 @@ async def cmd_resend(
         reply_user = reply_message.from_user if reply_message is not None else None
         if reply_message and reply_user is not None and reply_user.id == bot.id:
             from_user = _require_from_user(message)
-            user_info = None if bot_settings.use_local_names else await repo.get_user_info(from_user.id)
+            user_info = (
+                None
+                if bot_settings.use_local_names
+                else await repo.get_user_info(from_user.id)
+            )
             agent_name = _resolve_agent_name(from_user.id, bot_settings, user_info)
             if agent_name is None:
                 await message.reply(_no_name_error_text(bot_settings.use_local_names))
                 return
-            support_user_id = from_user.id if bot_settings.use_local_names else user_info.user_id  # type: ignore[union-attr]
+            support_user_id = (
+                from_user.id if bot_settings.use_local_names else user_info.user_id  # type: ignore[union-attr]
+            )
             resend_info = await repo.get_message_resend_info(
                 bot_id=bot.id,
                 resend_id=reply_message.message_id,
@@ -528,7 +544,11 @@ async def cmd_edit_msg(
         reply_user = reply_message.from_user if reply_message is not None else None
         if reply_message and reply_user is not None and reply_user.id == bot.id:
             from_user = _require_from_user(message)
-            user_info = None if bot_settings.use_local_names else await repo.get_user_info(from_user.id)
+            user_info = (
+                None
+                if bot_settings.use_local_names
+                else await repo.get_user_info(from_user.id)
+            )
             agent_name = _resolve_agent_name(from_user.id, bot_settings, user_info)
             if agent_name is None:
                 await message.reply(_no_name_error_text(bot_settings.use_local_names))

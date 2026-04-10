@@ -1,7 +1,17 @@
 import datetime
 import asyncio
 
-from sqlalchemy import BigInteger, String, DateTime, select, func, event, Boolean, Integer, JSON
+from sqlalchemy import (
+    BigInteger,
+    String,
+    DateTime,
+    select,
+    func,
+    event,
+    Boolean,
+    Integer,
+    JSON,
+)
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -12,6 +22,7 @@ DATABASE_URL = f"sqlite+aiosqlite:///{bot_config.SQLITE_FILE_NAME}"
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 
+
 # Enable WAL mode for better concurrency
 @event.listens_for(engine.sync_engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
@@ -19,6 +30,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
+
 
 session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -32,14 +44,17 @@ class Users(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_name: Mapped[str] = mapped_column(String(30))
     bot_id: Mapped[int] = mapped_column(BigInteger)
-    user_add_date: Mapped[datetime.datetime] = mapped_column(DateTime(), default=datetime.datetime.now,
-                                                             onupdate=datetime.datetime.now)
+    user_add_date: Mapped[datetime.datetime] = mapped_column(
+        DateTime(), default=datetime.datetime.now, onupdate=datetime.datetime.now
+    )
 
 
 class Messages(Base):
     __tablename__ = "t_messages"
     record_id: Mapped[int] = mapped_column(primary_key=True)
-    record_add_date: Mapped[datetime.datetime] = mapped_column(DateTime(), default=datetime.datetime.now)
+    record_add_date: Mapped[datetime.datetime] = mapped_column(
+        DateTime(), default=datetime.datetime.now
+    )
     bot_id: Mapped[int] = mapped_column(BigInteger)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     message_id: Mapped[int] = mapped_column(BigInteger)
@@ -76,14 +91,26 @@ async def update_db():
         await conn.run_sync(Base.metadata.create_all)
 
 
-async def save_message_ids(bot_id, user_id, message_id, resend_id, chat_from_id, chat_for_id):
+async def save_message_ids(
+    bot_id, user_id, message_id, resend_id, chat_from_id, chat_for_id
+):
     async with session_maker() as session:
-        session.add(Messages(bot_id=bot_id, user_id=user_id, message_id=message_id, resend_id=resend_id,
-                             chat_from_id=chat_from_id, chat_for_id=chat_for_id))
+        session.add(
+            Messages(
+                bot_id=bot_id,
+                user_id=user_id,
+                message_id=message_id,
+                resend_id=resend_id,
+                chat_from_id=chat_from_id,
+                chat_for_id=chat_for_id,
+            )
+        )
         await session.commit()
 
 
-async def get_message_resend_info(bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages | None:
+async def get_message_resend_info(
+    bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None
+) -> Messages | None:
     async with session_maker() as session:
         sl = select(Messages).filter(Messages.bot_id == bot_id)
         if message_id:
@@ -101,7 +128,9 @@ async def get_message_resend_info(bot_id, message_id=None, resend_id=None, chat_
 async def has_user_received_reply(bot_id: int, user_id: int) -> bool:
     """Check if a user has received a reply from support."""
     async with session_maker() as session:
-        sl = select(Messages).filter(Messages.bot_id == bot_id, Messages.chat_for_id == user_id)
+        sl = select(Messages).filter(
+            Messages.bot_id == bot_id, Messages.chat_for_id == user_id
+        )
         result = await session.execute(sl)
         return result.scalars().first() is not None
 
@@ -130,7 +159,7 @@ async def get_all_users(with_username=False) -> list:
         query_result = await session.execute(select(Users))
         for user in query_result.scalars():
             if with_username:
-                result.append(f'{user.user_name} (#ID{user.user_id})')
+                result.append(f"{user.user_name} (#ID{user.user_id})")
             result.append(user.user_name)
         return result
 
@@ -139,27 +168,17 @@ async def get_stats(bot_id, master_chat_id) -> list:
     async with session_maker() as session:
         # Получаем статистику по пользователям
         stmt_users = (
-            select(
-                Users.user_name,
-                func.count(Messages.user_id).label("message_count")
-            )
+            select(Users.user_name, func.count(Messages.user_id).label("message_count"))
             .join(Messages, Users.user_id == Messages.user_id)
-            .filter(
-                Messages.bot_id == bot_id,
-                Messages.chat_from_id == master_chat_id
-            )
+            .filter(Messages.bot_id == bot_id, Messages.chat_from_id == master_chat_id)
             .group_by(Users.user_name)
         )
         users_result = await session.execute(stmt_users)
         user_stats = users_result.all()
 
         # Получаем общее количество сообщений
-        stmt_total = (
-            select(func.count(Messages.record_id))
-            .filter(
-                Messages.bot_id == bot_id,
-                Messages.chat_for_id == master_chat_id
-            )
+        stmt_total = select(func.count(Messages.record_id)).filter(
+            Messages.bot_id == bot_id, Messages.chat_for_id == master_chat_id
         )
         total_result = await session.execute(stmt_total)
         total_messages = total_result.scalar()

@@ -19,7 +19,7 @@ from config.bot_config import bot_config
 async def aiogram_on_startup_polling(dispatcher: Dispatcher, bot: Bot) -> None:
     await bot.delete_webhook(drop_pending_updates=True)
     with suppress(TelegramBadRequest):
-        await bot.send_message(chat_id=bot_config.ADMIN_ID, text='Single bot started')
+        await bot.send_message(chat_id=bot_config.ADMIN_ID, text="Single bot started")
     logger.info("Started polling")
 
 
@@ -32,20 +32,20 @@ async def aiogram_on_shutdown_polling(dispatcher: Dispatcher, bot: Bot) -> None:
 
 def main():
     # Настройка логирования
-    logger.add("logs/SingleSupportBot.log", rotation="1 MB", level='INFO')
-    
+    logger.add("logs/SingleSupportBot.log", rotation="1 MB", level="INFO")
+
     # Получаем токен бота поддержки из конфига
     support_token = bot_config.single_bot_token
     if not support_token:
         logger.error("Не найден токен бота поддержки (single_bot_token)")
         return
-    
+
     # Создаем экземпляр бота
-    bot = Bot(token=support_token, default=DefaultBotProperties(parse_mode='HTML'))
-    
+    bot = Bot(token=support_token, default=DefaultBotProperties(parse_mode="HTML"))
+
     # Получаем информацию о боте
     bot_info = asyncio.run(bot.get_me())
-    
+
     # Создаем конфигурацию для одиночного бота
     single_bot_config = {
         str(bot_info.id): {
@@ -66,35 +66,38 @@ def main():
             "local_names": {},
             "use_auto_reply": bot_config.SINGLE_USE_AUTO_REPLY,
             "auto_reply": bot_config.SINGLE_AUTO_REPLY,
-            "ignore_users": []
+            "ignore_users": [],
         }
     }
-    
+
     # Устанавливаем конфигурацию в bot_config
     bot_config.json_config = single_bot_config
-    
+
     # Настраиваем хранилище состояний
-    storage = RedisStorage.from_url(url=bot_config.REDIS_URL,
-                                   key_builder=DefaultKeyBuilder(with_bot_id=True, with_destiny=True))
-    
+    storage = RedisStorage.from_url(
+        url=bot_config.REDIS_URL,
+        key_builder=DefaultKeyBuilder(with_bot_id=True, with_destiny=True),
+    )
+
     # Создаем диспетчер
     dispatcher = Dispatcher(storage=storage)
-    
+
     from bot.middlewares.db import DbSessionMiddleware
+
     dispatcher.update.middleware(DbSessionMiddleware())
-    
+
     # Регистрируем маршрутизатор поддержки
     dispatcher.include_router(support_router)
-    
+
     # Регистрируем обработчики запуска и остановки
     dispatcher.startup.register(aiogram_on_startup_polling)
     dispatcher.shutdown.register(aiogram_on_shutdown_polling)
-    
+
     # Запускаем бота на поллинге
     asyncio.run(dispatcher.start_polling(bot))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Инициализация Sentry
     if len(bot_config.SENTRY_DSN) > 10:
         sentry_sdk.init(
@@ -102,4 +105,4 @@ if __name__ == '__main__':
             traces_sample_rate=1.0,
             profiles_sample_rate=1.0,
         )
-    main() 
+    main()

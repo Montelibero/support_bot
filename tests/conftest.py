@@ -14,6 +14,7 @@ MOCK_SERVER_HOST = "localhost"
 MOCK_SERVER_URL = f"http://{MOCK_SERVER_HOST}:{MOCK_SERVER_PORT}"
 TEST_BOT_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 
+
 class MockRepo(Repo):
     def __init__(self):
         self.users = {}
@@ -27,7 +28,7 @@ class MockRepo(Repo):
             user.user_name = self.users[user_id]
             return user
         return None
-    
+
     async def get_all_users(self, with_username=False):
         return list(self.users.values())
 
@@ -36,23 +37,34 @@ class MockRepo(Repo):
         self.users[user_id] = user_name
 
     async def get_last_user_message(self, bot_id, user_id):
-        # Return last message from mock storage if needed. 
+        # Return last message from mock storage if needed.
         # For simple flow validation we can return None (no recent message)
         # or implement a lists of messages
-        return None 
+        return None
 
-    async def save_message_ids(self, bot_id, user_id, message_id, resend_id, chat_from_id, chat_for_id):
+    async def save_message_ids(
+        self, bot_id, user_id, message_id, resend_id, chat_from_id, chat_for_id
+    ):
         print(f"[MockRepo] save_message_ids: msg={message_id} resend={resend_id}")
-        self.messages.append({
-            "bot_id": bot_id,
-            "user_id": user_id,
-            "message_id": message_id,
-            "resend_id": resend_id,
-            "chat_from_id": chat_from_id,
-            "chat_for_id": chat_for_id
-        })
+        self.messages.append(
+            {
+                "bot_id": bot_id,
+                "user_id": user_id,
+                "message_id": message_id,
+                "resend_id": resend_id,
+                "chat_from_id": chat_from_id,
+                "chat_for_id": chat_for_id,
+            }
+        )
 
-    async def get_message_resend_info(self, bot_id, message_id=None, resend_id=None, chat_from_id=None, chat_for_id=None) -> Messages | None:  # type: ignore[override]
+    async def get_message_resend_info(
+        self,
+        bot_id,
+        message_id=None,
+        resend_id=None,
+        chat_from_id=None,
+        chat_for_id=None,
+    ) -> Messages | None:  # type: ignore[override]
         # Search in self.messages
         # Result should be an object with attributes accessing like .message_id
         for msg in self.messages:
@@ -66,35 +78,46 @@ class MockRepo(Repo):
                 continue
             if chat_for_id and msg["chat_for_id"] != chat_for_id:
                 continue
-            
+
             # Found. enhance generic dict or create SimpleNamespace
             from types import SimpleNamespace
+
             return SimpleNamespace(**msg)  # type: ignore[return-value]
         return None
 
     async def has_user_received_reply(self, bot_id: int, user_id: int) -> bool:
         for msg in self.messages:
-             if msg["bot_id"] == bot_id and msg["chat_for_id"] == user_id:
-                 return True
+            if msg["bot_id"] == bot_id and msg["chat_for_id"] == user_id:
+                return True
         return False
 
-    async def get_agent_message_counts(self, bot_id: int, master_chat_id: int) -> list[tuple[int, int]]:
+    async def get_agent_message_counts(
+        self, bot_id: int, master_chat_id: int
+    ) -> list[tuple[int, int]]:
         from collections import Counter
+
         counts: Counter[int] = Counter()
         for msg in self.messages:
-            if msg["bot_id"] == bot_id and msg["chat_from_id"] == master_chat_id and msg["user_id"] is not None:
+            if (
+                msg["bot_id"] == bot_id
+                and msg["chat_from_id"] == master_chat_id
+                and msg["user_id"] is not None
+            ):
                 counts[msg["user_id"]] += 1
         return list(counts.items())
 
     async def get_total_user_messages(self, bot_id: int, master_chat_id: int) -> int:
         return sum(
-            1 for msg in self.messages
+            1
+            for msg in self.messages
             if msg["bot_id"] == bot_id and msg["chat_for_id"] == master_chat_id
         )
+
 
 @pytest.fixture
 def repo():
     return MockRepo()
+
 
 @pytest.fixture
 def dp():
@@ -102,6 +125,7 @@ def dp():
     dp.include_router(support_router)
     setup_dialogs(dp)
     return dp
+
 
 @pytest.fixture
 async def mock_server():
@@ -111,41 +135,53 @@ async def mock_server():
 
     @routes.post("/bot{token}/deleteWebhook")
     async def delete_webhook(request):
-        received_requests.append({"method": "deleteWebhook", "token": request.match_info['token']})
+        received_requests.append(
+            {"method": "deleteWebhook", "token": request.match_info["token"]}
+        )
         return web.json_response({"ok": True, "result": True})
-        
+
     @routes.post("/bot{token}/setMyCommands")
     async def set_my_commands(request):
-        if request.content_type == 'application/json':
+        if request.content_type == "application/json":
             data = await request.json()
         else:
             data = await request.post()
-            
-        received_requests.append({"method": "setMyCommands", "token": request.match_info['token'], "data": dict(data)})
+
+        received_requests.append(
+            {
+                "method": "setMyCommands",
+                "token": request.match_info["token"],
+                "data": dict(data),
+            }
+        )
         return web.json_response({"ok": True, "result": True})
 
     @routes.post("/bot{token}/getMe")
     async def get_me(request):
-        received_requests.append({"method": "getMe", "token": request.match_info['token']})
-        return web.json_response({
-            "ok": True,
-            "result": {
-                "id": 123456,
-                "is_bot": True,
-                "first_name": "Test Bot",
-                "username": "test_bot",
-                "can_join_groups": True,
-                "can_read_all_group_messages": False,
-                "supports_inline_queries": False
+        received_requests.append(
+            {"method": "getMe", "token": request.match_info["token"]}
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "result": {
+                    "id": 123456,
+                    "is_bot": True,
+                    "first_name": "Test Bot",
+                    "username": "test_bot",
+                    "can_join_groups": True,
+                    "can_read_all_group_messages": False,
+                    "supports_inline_queries": False,
+                },
             }
-        })
+        )
 
     @routes.post("/bot{token}/sendMessage")
     async def send_message(request):
         # Debug print
         print(f"[MockServer] content_type: {request.content_type}")
-        
-        if request.content_type == 'application/json':
+
+        if request.content_type == "application/json":
             try:
                 data = await request.json()
             except Exception:
@@ -153,55 +189,67 @@ async def mock_server():
         else:
             # Handle x-www-form-urlencoded or multipart/form-data
             data = await request.post()
-        
+
         # Convert MultiDict to regular dict for easier testing
         data = dict(data)
-        
+
         print(f"[MockServer] sendMessage data: {data}")
-        
+
         # Cast chat_id to int if possible, as form data might be strings
         try:
-            chat_id = int(data.get('chat_id', 12345))
+            chat_id = int(data.get("chat_id", 12345))
         except (ValueError, TypeError):
             chat_id = 12345
-            
-        text = data.get('text', 'test_text')
 
-        received_requests.append({"method": "sendMessage", "token": request.match_info['token'], "data": data})
-        return web.json_response({
-            "ok": True,
-            "result": {
-                "message_id": 1,
-                "date": 1234567890,
-                "chat": {"id": chat_id, "type": "private", "first_name": "Test"},
-                "text": text
+        text = data.get("text", "test_text")
+
+        received_requests.append(
+            {
+                "method": "sendMessage",
+                "token": request.match_info["token"],
+                "data": data,
             }
-        })
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "result": {
+                    "message_id": 1,
+                    "date": 1234567890,
+                    "chat": {"id": chat_id, "type": "private", "first_name": "Test"},
+                    "text": text,
+                },
+            }
+        )
 
     @routes.post("/bot{token}/sendPhoto")
     async def send_photo(request):
-        if request.content_type == 'application/json':
+        if request.content_type == "application/json":
             data = await request.json()
         else:
             data = await request.post()
-            
+
         data = dict(data)
-        received_requests.append({"method": "sendPhoto", "token": request.match_info['token'], "data": data})
-        
+        received_requests.append(
+            {"method": "sendPhoto", "token": request.match_info["token"], "data": data}
+        )
+
         try:
-            chat_id = int(data.get('chat_id', 12345))
+            chat_id = int(data.get("chat_id", 12345))
         except (ValueError, TypeError):
             chat_id = 12345
-            
-        return web.json_response({
-            "ok": True,
-            "result": {
-                "message_id": 2, 
-                "date": 1234567890,
-                "chat": {"id": chat_id, "type": "private"},
-                "photo": [] 
+
+        return web.json_response(
+            {
+                "ok": True,
+                "result": {
+                    "message_id": 2,
+                    "date": 1234567890,
+                    "chat": {"id": chat_id, "type": "private"},
+                    "photo": [],
+                },
             }
-        })
+        )
 
     app = web.Application()
     app.add_routes(routes)
@@ -214,20 +262,23 @@ async def mock_server():
 
     await runner.cleanup()
 
+
 @pytest.fixture(autouse=True)
 def cleanup_router():
     yield
     # Detach all global routers
-    
+
     from bot.routers.supports import router as support_router
+
     if support_router.parent_router:
         support_router._parent_router = None
 
     from bot.routers.admin import router as admin_router
+
     if admin_router.parent_router:
         admin_router._parent_router = None
 
     from bot.routers.admin_dialog import dialog_all
+
     if dialog_all.parent_router:
         dialog_all._parent_router = None
-
