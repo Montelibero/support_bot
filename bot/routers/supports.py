@@ -868,6 +868,11 @@ async def resend_message_plus(
                     reply_markup=reply_markup,
                 )
                 return
+        logger.error(
+            f"resend_message_plus TelegramBadRequest — bot_id={bot.id}, "
+            f"src_chat_id={message.chat.id}, dst_chat_id={chat_id}, "
+            f"message_id={message.message_id}: {ex}"
+        )
         current_settings = config.get_bot_setting(bot.id)
         if (
             current_settings is not None
