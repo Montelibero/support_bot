@@ -5,6 +5,9 @@ from typing import Dict, Optional, List
 
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
 from environs import Env
 from pydantic import BaseModel
@@ -59,6 +62,9 @@ class BotConfig:
     REDIS_URL: str = field(default_factory=lambda: env.str("REDIS_URL"))
     SENTRY_DSN: str = field(default_factory=lambda: env.str("SENTRY_DSN"))
     ADMIN_ID: int = field(default_factory=lambda: env.int("ADMIN_ID", 84131737))
+    TELEGRAM_API_URL: Optional[str] = field(
+        default_factory=lambda: env.str("TELEGRAM_API_URL", None)
+    )
 
     # Parameters for single bot
     SINGLE_START_MESSAGE: str = field(
@@ -311,6 +317,27 @@ async def set_commands(bot):
     ]
     await bot.set_my_commands(
         commands=commands_private, scope=BotCommandScopeAllPrivateChats()
+    )
+
+
+def make_session() -> AiohttpSession:
+    """Создаёт aiohttp-сессию, уважающую env TELEGRAM_API_URL.
+
+    Without env: default cloud api.telegram.org. With env: local Bot API server
+    via TelegramAPIServer.from_base(url, is_local=True).
+    """
+    local_url = env.str("TELEGRAM_API_URL", None)
+    if local_url:
+        return AiohttpSession(api=TelegramAPIServer.from_base(local_url, is_local=True))
+    return AiohttpSession()
+
+
+def make_bot(token: str, default: Optional[DefaultBotProperties] = None) -> Bot:
+    """Единая точка создания aiogram Bot — подставляет сессию через make_session()."""
+    return Bot(
+        token=token,
+        default=default or DefaultBotProperties(parse_mode="HTML"),
+        session=make_session(),
     )
 
 

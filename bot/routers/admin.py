@@ -6,6 +6,7 @@ from aiogram_dialog import DialogManager, StartMode
 from loguru import logger
 
 from bot.routers.admin_dialog import AdminBotStates
+from config.bot_config import bot_config, make_bot
 
 router = Router()
 
@@ -23,6 +24,54 @@ async def cmd_admin_my_bots(message: Message, dialog_manager: DialogManager):
 @router.message(Command(commands=["add_bot"]))
 async def cmd_admin_add_bot(message: Message, dialog_manager: DialogManager):
     await dialog_manager.start(AdminBotStates.token, mode=StartMode.NEW_STACK)
+
+
+@router.message(Command(commands=["logout"]), F.chat.type == "private")
+async def cmd_logout_all(message: Message, bot: Bot):
+    """Разлогинивает все боты из текущего Bot API сервера.
+
+    После выполнения оператор правит env `TELEGRAM_API_URL` и перезапускает
+    контейнер (`just rebuild`). 10-минутный кулдаун на повторный логин на тот
+    же API-сервер (`https://core.telegram.org/bots/api#logout`).
+    """
+    if message.from_user is None or message.from_user.id != bot_config.ADMIN_ID:
+        return
+
+    await message.answer(
+        "Logout started. Set/unset TELEGRAM_API_URL and restart after.\n"
+        "10-min cooldown before re-login on the same API server."
+    )
+
+    batch: list[str] = []
+    for bot_setting in bot_config.get_bot_settings():
+        try:
+            async with make_bot(bot_setting.token) as temp_bot:
+                await temp_bot.delete_webhook(drop_pending_updates=False)
+                await temp_bot.log_out()
+            batch.append(f"✅ {bot_setting.username} ({bot_setting.id})")
+            logger.warning(
+                f"Bot logged out — bot_id={bot_setting.id}, "
+                f"username={bot_setting.username}"
+            )
+        except Exception as ex:
+            batch.append(f"❌ {bot_setting.username}: {ex}")
+            logger.exception(
+                f"Logout failed — bot_id={bot_setting.id}, "
+                f"username={bot_setting.username}: {ex}"
+            )
+        if len(batch) >= 10:
+            await message.answer("\n".join(batch))
+            batch = []
+
+    if batch:
+        await message.answer("\n".join(batch))
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+        await bot.log_out()
+        logger.warning(f"Main admin bot logged out — bot_id={bot.id}")
+    except Exception as ex:
+        logger.exception(f"Main admin bot logout failed — bot_id={bot.id}: {ex}")
 
 
 # @router.message(Command(commands=["exit"]))

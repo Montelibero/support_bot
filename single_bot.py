@@ -6,14 +6,13 @@ from contextlib import suppress
 
 import sentry_sdk
 from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiogram.fsm.storage.redis import RedisStorage
 from loguru import logger
 
 from bot.routers.supports import router as support_router
-from config.bot_config import bot_config
+from config.bot_config import bot_config, make_bot
 
 
 async def aiogram_on_startup_polling(dispatcher: Dispatcher, bot: Bot) -> None:
@@ -41,7 +40,7 @@ def main():
         return
 
     # Создаем экземпляр бота
-    bot = Bot(token=support_token, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = make_bot(support_token)
 
     # Получаем информацию о боте
     bot_info = asyncio.run(bot.get_me())

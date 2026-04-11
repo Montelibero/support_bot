@@ -38,10 +38,10 @@ async def test_startup_unauthorized_error():
         # Mock property
         type(mock_config).other_bots_url = "https://example.com/secret/bot/{bot_token}"
 
-        # Mock Bot constructor to raise TelegramUnauthorizedError
-        # Inside the function, Bot(token=...) is called.
+        # Mock bot factory to raise TelegramUnauthorizedError
+        # Inside the function, make_bot(token) is called.
         with patch(
-            "main.Bot",
+            "main.make_bot",
             side_effect=TelegramUnauthorizedError(
                 method=MagicMock(), message="Unauthorized"
             ),
@@ -88,11 +88,11 @@ async def test_startup_skips_disabled_bot_without_telegram_calls():
         mock_config.MAIN_BOT_PATH = "main"
         type(mock_config).other_bots_url = "https://example.com/secret/bot/{bot_token}"
 
-        with patch("main.Bot") as mock_bot_ctor:
+        with patch("main.make_bot") as mock_bot_factory:
             with patch("config.bot_config.set_commands", new=AsyncMock()):
                 await aiogram_on_startup_webhook(mock_dispatcher, mock_main_bot)
 
-        mock_bot_ctor.assert_not_called()
+        mock_bot_factory.assert_not_called()
         mock_config.save_settings_to_db.assert_not_called()
 
 
@@ -126,7 +126,7 @@ async def test_startup_closes_tmp_bot_session_after_webhook_setup():
         bot_ctx_manager = AsyncMock()
         bot_ctx_manager.__aenter__.return_value = tmp_bot
 
-        with patch("main.Bot", return_value=bot_ctx_manager):
+        with patch("main.make_bot", return_value=bot_ctx_manager):
             with patch("config.bot_config.set_commands", new=AsyncMock()):
                 await aiogram_on_startup_webhook(mock_dispatcher, mock_main_bot)
 

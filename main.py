@@ -16,7 +16,7 @@ from loguru import logger
 from bot.routers.admin import router as admin_router
 from bot.routers.admin_dialog import dialog_all
 from bot.routers.supports import router as support_router
-from config.bot_config import bot_config
+from config.bot_config import bot_config, make_bot
 
 
 async def aiogram_on_startup_polling(dispatcher: Dispatcher, bot: Bot) -> None:
@@ -67,7 +67,7 @@ async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
             continue
 
         try:
-            async with Bot(token=bot_setting.token) as tmp_bot:
+            async with make_bot(bot_setting.token) as tmp_bot:
                 # Устанавливаем команды для дополнительного бота
                 from config.bot_config import set_commands
 
@@ -112,9 +112,7 @@ def main():
     # Load bot settings from database (synchronously)
     bot_config.load_from_db()
 
-    bot = Bot(
-        token=bot_config.main_bot_token, default=DefaultBotProperties(parse_mode="HTML")
-    )
+    bot = make_bot(bot_config.main_bot_token)
 
     storage = RedisStorage.from_url(
         url=bot_config.REDIS_URL,
@@ -159,10 +157,7 @@ def main():
         TokenBasedRequestHandler(
             dispatcher=multibot_dispatcher,
             bots={
-                bot_setting.token: Bot(
-                    token=bot_setting.token,
-                    default=bot_settings["default"],
-                )
+                bot_setting.token: make_bot(bot_setting.token)
                 for bot_setting in bot_config.get_bot_settings()
                 if bot_setting.can_work
             },

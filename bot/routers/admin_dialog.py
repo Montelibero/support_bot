@@ -1,4 +1,3 @@
-from aiogram import Bot
 from aiogram.enums import ContentType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -11,7 +10,13 @@ from aiogram_dialog.widgets.kbd import Select, Column, SwitchTo, ManagedCheckbox
 from aiogram_dialog.widgets.text import Const, Format
 from loguru import logger
 
-from config.bot_config import SupportBotSettings, delete_webhook, set_webhook, BotConfig
+from config.bot_config import (
+    BotConfig,
+    SupportBotSettings,
+    delete_webhook,
+    make_bot,
+    set_webhook,
+)
 
 
 class AdminBotStates(StatesGroup):
@@ -75,7 +80,7 @@ async def mh_get_token(
 
         validate_token(token)
 
-        async with Bot(token=token) as bot:
+        async with make_bot(token) as bot:
             bot_info = await bot.get_me()
 
         # Check if bot already exists
@@ -160,7 +165,7 @@ async def mh_change_chat(
             if bot_setting.can_work:
                 bot_setting.can_work = False
                 await config.update_bot_setting(bot_setting)
-                async with Bot(token=bot_setting.token) as temp_bot:
+                async with make_bot(bot_setting.token) as temp_bot:
                     await delete_webhook(temp_bot)
 
             await message.answer(
@@ -385,7 +390,7 @@ async def button_clicked(
     elif button.widget_id == "can_work":
         if not bot_setting.can_work:
             try:
-                async with Bot(token=bot_setting.token) as temp_bot:
+                async with make_bot(bot_setting.token) as temp_bot:
                     try:
                         if bot_setting.master_chat is None:
                             await callback.answer(
@@ -420,7 +425,7 @@ async def button_clicked(
                 )
         else:
             try:
-                async with Bot(token=bot_setting.token) as temp_bot:
+                async with make_bot(bot_setting.token) as temp_bot:
                     await delete_webhook(temp_bot)
                 bot_setting.can_work = False
                 await config.update_bot_setting(bot_setting)
@@ -435,7 +440,7 @@ async def button_clicked(
     #     # Если изменяется чат или топик, снимаем галочку "работает"
     #     bot_setting.can_work = False
     #     await bot_config.update_bot_setting(bot_setting)
-    #     async with Bot(token=bot_setting.token) as temp_bot:
+    #     async with make_bot(bot_setting.token) as temp_bot:
     #         await delete_webhook(temp_bot)
     #     await callback.answer("Настройки чата изменены. Бот деактивирован.")
 
