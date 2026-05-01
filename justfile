@@ -67,7 +67,7 @@ clean:
     find . -type f -name "*.log" -exec rm -f {} +
 
 
-push-gitdocker tag="latest":
-    docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) -t {{IMAGE_NAME}}:{{tag}} .
-    docker tag {{IMAGE_NAME}} ghcr.io/montelibero/{{IMAGE_NAME}}:{{tag}}
-    docker push ghcr.io/montelibero/{{IMAGE_NAME}}:{{tag}}
+#push-gitdocker tag="latest":
+#    docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) -t {{IMAGE_NAME}}:{{tag}} .
+#    docker tag {{IMAGE_NAME}} ghcr.io/montelibero/{{IMAGE_NAME}}:{{tag}}
+#    docker push ghcr.io/montelibero/{{IMAGE_NAME}}:{{tag}}
