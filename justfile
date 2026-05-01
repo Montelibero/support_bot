@@ -32,11 +32,11 @@ check-changed:
 # Docker targets
 build tag="latest":
     # Build Docker image
-    docker build -t {{IMAGE_NAME}}:{{tag}} .
+    docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) -t {{IMAGE_NAME}}:{{tag}} .
 
 run:
     # Build and Run Docker container
-    docker build -t {{IMAGE_NAME}}:local .
+    docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) -t {{IMAGE_NAME}}:local .
     # echo "http://127.0.0.1:8081"
     # docker run --rm -p 8081:80 {{IMAGE_NAME}}:local
 
@@ -68,6 +68,6 @@ clean:
 
 
 push-gitdocker tag="latest":
-    docker build -t {{IMAGE_NAME}}:{{tag}} .
+    docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) -t {{IMAGE_NAME}}:{{tag}} .
     docker tag {{IMAGE_NAME}} ghcr.io/montelibero/{{IMAGE_NAME}}:{{tag}}
     docker push ghcr.io/montelibero/{{IMAGE_NAME}}:{{tag}}
