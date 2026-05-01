@@ -138,6 +138,9 @@ ENVIRONMENT=production uv run main.py
 сервере, startup упадёт с `Unauthorized` для каждого токена — подождите и
 повторите `just rebuild`.
 
+> Полная пошаговая инструкция с учётом топологии, откатом и диагностикой
+> сломанных маршрутов — [docs/runbooks/switching-to-local-bot-api.md](docs/runbooks/switching-to-local-bot-api.md).
+
 ## Логирование
 
 Логи сохраняются в директории `logs/`:
