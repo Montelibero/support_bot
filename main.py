@@ -20,6 +20,8 @@ from config.bot_config import bot_config, make_bot
 
 
 async def aiogram_on_startup_polling(dispatcher: Dispatcher, bot: Bot) -> None:
+    git_commit = os.environ.get("GIT_COMMIT", "unknown")
+    logger.info(f"Starting polling — GIT_COMMIT={git_commit}")
     await bot.delete_webhook(drop_pending_updates=True)
     # await setup_aiogram(dispatcher)
     # Устанавливаем команды для бота
@@ -40,6 +42,8 @@ async def aiogram_on_shutdown_polling(dispatcher: Dispatcher, bot: Bot) -> None:
 
 
 async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
+    git_commit = os.environ.get("GIT_COMMIT", "unknown")
+    logger.info(f"Starting webhook — GIT_COMMIT={git_commit}")
     # Определяем типы обновлений, которые используются в обработчиках
     allowed_updates = dispatcher.resolve_used_update_types()
     if "message_reaction" not in allowed_updates:

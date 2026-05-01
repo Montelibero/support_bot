@@ -2,6 +2,7 @@ FROM python:3.12-slim-bookworm
 
 ARG GIT_COMMIT="unknown"
 LABEL git_commit="${GIT_COMMIT}"
+ENV GIT_COMMIT="${GIT_COMMIT}"
 
 # Install uv.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
