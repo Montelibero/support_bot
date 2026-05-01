@@ -15,6 +15,12 @@ Each runbook should include:
 
 ## Initial Index
 
+- [switching-to-local-bot-api.md](switching-to-local-bot-api.md) —
+  миграция сервиса с cloud Bot API на self-hosted `telegram-bot-api`,
+  уход от публичного домена и TLS.
+- [reactions-in-restricted-chats.md](reactions-in-restricted-chats.md) —
+  что делать, если бот не ставит реакции в чате и в логи сыпется
+  `Bad Request: REACTION_INVALID`.
 - (to add) Bot startup failures
 - (to add) Webhook delivery issues
 - (to add) Redis connectivity issues

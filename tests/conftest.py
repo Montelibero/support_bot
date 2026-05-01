@@ -264,6 +264,15 @@ async def mock_server():
 
 
 @pytest.fixture(autouse=True)
+def _reset_reactions_cache():
+    from bot.reactions import clear_cache
+
+    clear_cache()
+    yield
+    clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def cleanup_router():
     yield
     # Detach all global routers
