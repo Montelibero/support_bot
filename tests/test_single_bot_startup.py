@@ -1,13 +1,13 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 from single_bot import main
 
 
 @patch("single_bot.asyncio.run")
 @patch("single_bot.Dispatcher.start_polling", new_callable=MagicMock)
 @patch("single_bot.bot_config")
-@patch("single_bot.Bot")
+@patch("single_bot.make_bot")
 def test_single_bot_setup(
-    mock_bot_cls, mock_config, mock_start_polling, mock_asyncio_run
+    mock_make_bot, mock_config, mock_start_polling, mock_asyncio_run
 ):
     """
     Test that single_bot.py initializes components correctly
@@ -22,6 +22,9 @@ def test_single_bot_setup(
     mock_bot_info = MagicMock()
     mock_bot_info.id = 123456
     mock_bot_info.username = "test_bot"
+    mock_bot = MagicMock()
+    mock_bot.get_me = MagicMock(return_value=mock_bot_info)
+    mock_make_bot.return_value = mock_bot
     mock_asyncio_run.return_value = mock_bot_info
 
     # Run main logic

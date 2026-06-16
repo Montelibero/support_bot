@@ -66,6 +66,18 @@ Before coding a non-trivial task:
 - Affected files and risks are listed.
 - Verification steps are explicit.
 
+## File Edit Approval
+
+Before each new task, identify the files that are expected to be edited and
+ask the user for permission to edit them.
+
+- Do not edit non-Markdown files until the user explicitly approves each file
+  by name.
+- Markdown files (`*.md`) are pre-approved and may be edited without asking for
+  per-file permission.
+- If the required file list changes during the task, ask for approval before
+  editing any newly identified non-Markdown file.
+
 ## Definition of Done for Changes
 
 - Code changes are minimal and scoped.

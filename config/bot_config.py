@@ -40,6 +40,7 @@ class SupportBotSettings(BaseModel):
     local_names: dict = {}
     use_auto_reply: bool = False
     block_links: bool = True
+    spam_block_words: list[str] = []
     auto_reply: str = (
         "Message automatically forwarded to support. Please wait for a response."
     )
@@ -139,6 +140,7 @@ class BotConfig:
 
                 for row in rows:
                     bot_id = row["id"]
+                    columns = set(row.keys())
 
                     # Manual mapping and JSON parsing
                     bot_dict = {
@@ -163,6 +165,14 @@ class BotConfig:
                         else row["local_names"],
                         "use_auto_reply": bool(row["use_auto_reply"]),
                         "block_links": bool(row["block_links"]),
+                        "spam_block_words": json.loads(row["spam_block_words"])
+                        if "spam_block_words" in columns
+                        and isinstance(row["spam_block_words"], str)
+                        else (
+                            row["spam_block_words"]
+                            if "spam_block_words" in columns
+                            else []
+                        ),
                         "auto_reply": row["auto_reply"],
                         "ignore_users": json.loads(row["ignore_users"])
                         if isinstance(row["ignore_users"], str)
@@ -174,6 +184,8 @@ class BotConfig:
                         bot_dict["local_names"] = {}
                     if bot_dict["ignore_users"] is None:
                         bot_dict["ignore_users"] = []
+                    if bot_dict["spam_block_words"] is None:
+                        bot_dict["spam_block_words"] = []
 
                     self.json_config[str(bot_id)] = bot_dict
 
@@ -236,6 +248,7 @@ class BotConfig:
                     bot_db.local_names = settings.local_names
                     bot_db.use_auto_reply = settings.use_auto_reply
                     bot_db.block_links = settings.block_links
+                    bot_db.spam_block_words = settings.spam_block_words
                     bot_db.auto_reply = settings.auto_reply
                     bot_db.ignore_users = settings.ignore_users
                 else:
@@ -258,6 +271,7 @@ class BotConfig:
                         local_names=settings.local_names,
                         use_auto_reply=settings.use_auto_reply,
                         block_links=settings.block_links,
+                        spam_block_words=settings.spam_block_words,
                         auto_reply=settings.auto_reply,
                         ignore_users=settings.ignore_users,
                     )

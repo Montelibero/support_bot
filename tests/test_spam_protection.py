@@ -9,6 +9,171 @@ from bot.routers.supports import router as support_router
 from tests.conftest import MOCK_SERVER_URL, TEST_BOT_TOKEN
 
 
+class MockMiddleware:
+    def __init__(self, repo_instance, config_instance, settings_instance):
+        self.repo = repo_instance
+        self.config = config_instance
+        self.settings = settings_instance
+
+    async def __call__(self, handler, event, data):
+        data["repo"] = self.repo
+        data["config"] = self.config
+        data["bot_settings"] = self.settings
+        return await handler(event, data)
+
+
+def build_dispatcher(repo, config, settings) -> Dispatcher:
+    dp = Dispatcher()
+    dp.include_router(support_router)
+    dp.update.middleware(MockMiddleware(repo, config, settings))
+    return dp
+
+
+def find_send_message(mock_server, chat_id: int):
+    return next(
+        (
+            r
+            for r in mock_server
+            if r["method"] == "sendMessage"
+            and str(r["data"]["chat_id"]) == str(chat_id)
+        ),
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_spam_block_words_block_new_user_by_substring_case_insensitive(
+    mock_server, repo
+):
+    from unittest.mock import MagicMock
+
+    master_chat_id = -100999
+    user_id = 555
+    session = AiohttpSession(api=TelegramAPIServer.from_base(MOCK_SERVER_URL))
+    bot = Bot(token=TEST_BOT_TOKEN, session=session)
+
+    mock_config = MagicMock()
+    mock_config.media_groups = {}
+    mock_settings = MagicMock()
+    mock_settings.master_chat = master_chat_id
+    mock_settings.block_links = True
+    mock_settings.spam_block_words = ["USDT"]
+    mock_settings.ignore_users = []
+    mock_settings.special_commands = 0
+    mock_settings.use_auto_reply = False
+    mock_settings.mark_bad = False
+    mock_config.get_bot_setting.return_value = mock_settings
+
+    dp = build_dispatcher(repo, mock_config, mock_settings)
+
+    update = types.Update(
+        update_id=100,
+        message=types.Message(
+            message_id=1000,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=user_id, type="private"),
+            from_user=types.User(id=user_id, is_bot=False, first_name="Spammer"),
+            text="Sell TUSDT fast",
+        ),
+    )
+
+    await dp.feed_update(bot=bot, update=update)
+
+    req_block = find_send_message(mock_server, user_id)
+    assert req_block is not None
+    assert "Links and media are not allowed" in req_block["data"]["text"]
+    assert find_send_message(mock_server, master_chat_id) is None
+
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_spam_block_words_allowed_after_support_reply(mock_server, repo):
+    from unittest.mock import MagicMock
+
+    master_chat_id = -100999
+    user_id = 555
+    session = AiohttpSession(api=TelegramAPIServer.from_base(MOCK_SERVER_URL))
+    bot = Bot(token=TEST_BOT_TOKEN, session=session)
+
+    mock_config = MagicMock()
+    mock_config.media_groups = {}
+    mock_settings = MagicMock()
+    mock_settings.master_chat = master_chat_id
+    mock_settings.block_links = True
+    mock_settings.spam_block_words = ["USDT"]
+    mock_settings.ignore_users = []
+    mock_settings.special_commands = 0
+    mock_settings.use_auto_reply = False
+    mock_settings.mark_bad = False
+    mock_config.get_bot_setting.return_value = mock_settings
+
+    await repo.save_message_ids(bot.id, 888, 200, 201, master_chat_id, user_id)
+    dp = build_dispatcher(repo, mock_config, mock_settings)
+
+    update = types.Update(
+        update_id=101,
+        message=types.Message(
+            message_id=1001,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=user_id, type="private"),
+            from_user=types.User(id=user_id, is_bot=False, first_name="User"),
+            text="USDT question after reply",
+        ),
+    )
+
+    await dp.feed_update(bot=bot, update=update)
+
+    req_forward = find_send_message(mock_server, master_chat_id)
+    assert req_forward is not None
+    assert "USDT question after reply" in req_forward["data"]["text"]
+
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_spam_block_words_allowed_when_block_links_disabled(mock_server, repo):
+    from unittest.mock import MagicMock
+
+    master_chat_id = -100999
+    user_id = 555
+    session = AiohttpSession(api=TelegramAPIServer.from_base(MOCK_SERVER_URL))
+    bot = Bot(token=TEST_BOT_TOKEN, session=session)
+
+    mock_config = MagicMock()
+    mock_config.media_groups = {}
+    mock_settings = MagicMock()
+    mock_settings.master_chat = master_chat_id
+    mock_settings.block_links = False
+    mock_settings.spam_block_words = ["USDT"]
+    mock_settings.ignore_users = []
+    mock_settings.special_commands = 0
+    mock_settings.use_auto_reply = False
+    mock_settings.mark_bad = False
+    mock_config.get_bot_setting.return_value = mock_settings
+
+    dp = build_dispatcher(repo, mock_config, mock_settings)
+
+    update = types.Update(
+        update_id=102,
+        message=types.Message(
+            message_id=1002,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=user_id, type="private"),
+            from_user=types.User(id=user_id, is_bot=False, first_name="User"),
+            text="USDT question with disabled protection",
+        ),
+    )
+
+    await dp.feed_update(bot=bot, update=update)
+
+    req_forward = find_send_message(mock_server, master_chat_id)
+    assert req_forward is not None
+    assert "USDT question with disabled protection" in req_forward["data"]["text"]
+
+    await bot.session.close()
+
+
 @pytest.mark.asyncio
 async def test_spam_protection(mock_server, repo):
     """
@@ -51,6 +216,7 @@ async def test_spam_protection(mock_server, repo):
     mock_settings = MagicMock()
     mock_settings.master_chat = MASTER_CHAT_ID
     mock_settings.block_links = True  # Enable link blocking
+    mock_settings.spam_block_words = []
     mock_settings.ignore_users = []
     mock_settings.special_commands = 0
     mock_settings.use_auto_reply = False

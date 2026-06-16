@@ -64,6 +64,8 @@ def main():
             "use_local_names": False,
             "local_names": {},
             "use_auto_reply": bot_config.SINGLE_USE_AUTO_REPLY,
+            "block_links": True,
+            "spam_block_words": [],
             "auto_reply": bot_config.SINGLE_AUTO_REPLY,
             "ignore_users": [],
         }

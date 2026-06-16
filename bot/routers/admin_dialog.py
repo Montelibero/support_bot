@@ -29,6 +29,7 @@ class AdminBotStates(StatesGroup):
     change_chat = State()
     transfer_bot = State()
     auto_message = State()
+    spam_block_words = State()
 
 
 default_start_message = (
@@ -248,6 +249,44 @@ async def mh_change_auto_reply(
     await dialog_manager.switch_to(AdminBotStates.options)
 
 
+def _parse_spam_block_words(text: str) -> list[str]:
+    words = []
+    seen = set()
+    for raw_word in text.replace(",", "\n").splitlines():
+        word = raw_word.strip()
+        key = word.casefold()
+        if word and key not in seen:
+            words.append(word)
+            seen.add(key)
+    return words
+
+
+async def mh_change_spam_block_words(
+    message: Message, widget: MessageInput, dialog_manager: DialogManager
+) -> None:
+    state = dialog_manager.middleware_data["state"]
+    data = await state.get_data()
+    bot_id = data.get("bot_id")
+    config = dialog_manager.middleware_data.get("config")
+    assert isinstance(config, BotConfig)
+    bot_setting = config.get_bot_setting(bot_id)
+    if bot_setting is None:
+        return
+
+    if message.text is None:
+        return
+
+    if message.text.strip() == "-":
+        bot_setting.spam_block_words = []
+        await config.update_bot_setting(bot_setting)
+        await message.answer("Список стоп-слов очищен.")
+    else:
+        bot_setting.spam_block_words = _parse_spam_block_words(message.text)
+        await config.update_bot_setting(bot_setting)
+        await message.answer("Список стоп-слов успешно обновлен.")
+    await dialog_manager.switch_to(AdminBotStates.options)
+
+
 async def mh_change_owner(
     message: Message, widget: MessageInput, manager: DialogManager
 ) -> None:
@@ -332,6 +371,12 @@ async def info_getter(dialog_manager: DialogManager, state: FSMContext, **kwargs
         if len(bot_setting.auto_reply) > 100
         else bot_setting.auto_reply
     )
+    spam_block_words = "\n".join(bot_setting.spam_block_words) or "(пусто)"
+    spam_block_words_mini = (
+        spam_block_words[:100] + "..."
+        if len(spam_block_words) > 100
+        else spam_block_words
+    )
 
     return {
         "username": bot_setting.username,
@@ -349,6 +394,8 @@ async def info_getter(dialog_manager: DialogManager, state: FSMContext, **kwargs
         "use_auto_reply_text": use_auto_reply_text,
         "auto_reply": bot_setting.auto_reply,
         "auto_reply_mini": auto_reply_mini,
+        "spam_block_words": spam_block_words,
+        "spam_block_words_mini": spam_block_words_mini,
         "block_links": bot_setting.block_links,
         "block_links_text": block_links_text,
     }
@@ -455,6 +502,7 @@ window_bot_config = Window(
         "<b>Приветственное сообщение:</b>\n<blockquote>{start_message_mini}</blockquote>\n\n"
         "<b>Политика конфиденциальности:</b>\n<blockquote>{security_policy_mini}</blockquote>\n\n"
         "<b>Автоответ:</b>\n<blockquote>{auto_reply_mini}</blockquote>\n\n"
+        "<b>Стоп-слова:</b>\n<blockquote>{spam_block_words_mini}</blockquote>\n\n"
         "Ставить обезьянку - бот будет ставить обезьянку на все сообщения в чате "
         "которые не идут в ответ пользователю\n\n"
         "Игнорировать команды - бот будет игнорировать команды с установкой имени и прочие, "
@@ -501,6 +549,11 @@ window_bot_config = Window(
         Const("Изменить автоответ"),
         state=AdminBotStates.auto_message,
         id="to_auto",
+    ),
+    SwitchTo(
+        Const("Изменить стоп-слова"),
+        state=AdminBotStates.spam_block_words,
+        id="to_spam_words",
     ),
     Button(
         text=Format("{use_auto_reply_text} Разрешить автоответ"),
@@ -600,6 +653,22 @@ window_auto_reply = Window(
     parse_mode="html",
 )
 
+window_spam_block_words = Window(
+    Const("Текущие стоп-слова:"),
+    Format("<code>{spam_block_words}</code>"),
+    Const(
+        "\nВведите стоп-слова через запятую или с новой строки.\n"
+        "Сообщение блокируется, если содержит стоп-слово как часть текста, без учета регистра.\n"
+        'Пример: USDT заблокирует "USDT", "usdt", "TUSDT".\n'
+        'Отправьте "-" чтобы очистить список.'
+    ),
+    MessageInput(mh_change_spam_block_words),
+    SwitchTo(Const("Назад"), id="back_to_options", state=AdminBotStates.options),
+    state=AdminBotStates.spam_block_words,
+    getter=info_getter,
+    parse_mode="html",
+)
+
 dialog_all = Dialog(
     window_bot_config,
     window_send_token,
@@ -609,4 +678,5 @@ dialog_all = Dialog(
     window_change_security_policy,
     window_transfer_bot,
     window_auto_reply,
+    window_spam_block_words,
 )

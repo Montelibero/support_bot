@@ -27,6 +27,8 @@ from bot.reactions import safe_react_to_message, safe_set_message_reaction
 router = Router()
 router.include_router(get_all_routers())
 
+SPAM_BLOCK_REPLY_TEXT = "Ссылки и медиа запрещены / Links and media are not allowed"
+
 
 def _require_text(message: types.Message) -> str:
     assert message.text is not None
@@ -113,6 +115,39 @@ def _no_name_error_text(use_local_names: bool) -> str:
         f'пришлите "/myname псевдоним" и повторите ваш ответ. '
         f"/show_names покажет занятые псевдонимы"
     )
+
+
+def _has_blocked_entity(message: types.Message) -> bool:
+    if not message.entities:
+        return False
+
+    blocked_entity_types = {
+        MessageEntityType.URL,
+        MessageEntityType.TEXT_LINK,
+        MessageEntityType.TEXT_MENTION,
+        MessageEntityType.MENTION,
+        MessageEntityType.HASHTAG,
+        MessageEntityType.CASHTAG,
+    }
+    return any(entity.type in blocked_entity_types for entity in message.entities)
+
+
+def _has_spam_block_word(message: types.Message, block_words: list[str]) -> bool:
+    if message.text is None:
+        return False
+
+    text = message.text.casefold()
+    return any(word.strip().casefold() in text for word in block_words if word.strip())
+
+
+def _should_block_pre_reply_content(
+    message: types.Message, bot_settings: SupportBotSettings
+) -> bool:
+    if message.content_type != ContentType.TEXT:
+        return True
+    if _has_blocked_entity(message):
+        return True
+    return _has_spam_block_word(message, bot_settings.spam_block_words)
 
 
 class LinkChatCallbackData(CallbackData, prefix="link_chat"):
@@ -459,25 +494,9 @@ async def cmd_resend(
             bot_id=bot.id, user_id=from_user.id
         )
         if not user_has_reply and bot_settings.block_links:
-            if message.content_type != ContentType.TEXT:
-                await message.reply(
-                    "Ссылки и медиа запрещены / Links and media are not allowed"
-                )
+            if _should_block_pre_reply_content(message, bot_settings):
+                await message.reply(SPAM_BLOCK_REPLY_TEXT)
                 return
-            if message.entities:
-                for entity in message.entities:
-                    if entity.type in [
-                        MessageEntityType.URL,
-                        MessageEntityType.TEXT_LINK,
-                        MessageEntityType.TEXT_MENTION,
-                        MessageEntityType.MENTION,
-                        MessageEntityType.HASHTAG,
-                        MessageEntityType.CASHTAG,
-                    ]:
-                        await message.reply(
-                            "Ссылки и медиа запрещены / Links and media are not allowed"
-                        )
-                        return
         if from_user.id in bot_settings.ignore_users:
             return
 
