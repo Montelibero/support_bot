@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from aiogram.exceptions import TelegramUnauthorizedError
 from config.bot_config import SupportBotSettings
-from main import aiogram_on_startup_webhook
+from main import aiogram_on_startup_webhook, main
 
 
 @pytest.mark.asyncio
@@ -133,3 +133,28 @@ async def test_startup_closes_tmp_bot_session_after_webhook_setup():
         bot_ctx_manager.__aenter__.assert_awaited_once()
         bot_ctx_manager.__aexit__.assert_awaited_once()
         tmp_bot.set_webhook.assert_awaited_once()
+
+
+@patch("main.asyncio.run")
+@patch("main.Dispatcher.start_polling", new_callable=MagicMock)
+@patch("main.bot_config")
+@patch("main.RedisStorage")
+@patch("database.models.update_db", new_callable=MagicMock)
+def test_main_runs_db_update_before_loading_settings(
+    mock_update_db,
+    mock_redis_storage,
+    mock_config,
+    mock_start_polling,
+    mock_asyncio_run,
+):
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    mock_redis_storage.from_url.return_value = MemoryStorage()
+    mock_config.main_bot_token = "123:main_token"
+    mock_config.REDIS_URL = "redis://localhost:6379/0"
+
+    main()
+
+    mock_update_db.assert_called_once_with()
+    assert mock_asyncio_run.call_args_list[0].args[0] is mock_update_db.return_value
+    mock_config.load_from_db.assert_called_once()

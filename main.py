@@ -113,6 +113,10 @@ async def aiogram_on_shutdown_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
 def main():
     logger.add("logs/SupportBot.log", rotation="1 MB", level="INFO")
 
+    from database.models import update_db
+
+    asyncio.run(update_db())
+
     # Load bot settings from database (synchronously)
     bot_config.load_from_db()
 

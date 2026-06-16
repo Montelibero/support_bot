@@ -3,12 +3,17 @@ from unittest.mock import patch, MagicMock
 from main import main
 
 
+@patch("database.models.update_db", new_callable=MagicMock)
 @patch("main.asyncio.run")
 @patch("main.Dispatcher.start_polling", new_callable=MagicMock)
 @patch("main.bot_config")
 @patch("main.RedisStorage")
 def test_main_polling_setup(
-    mock_redis_storage, mock_config, mock_start_polling, mock_asyncio_run
+    mock_redis_storage,
+    mock_config,
+    mock_start_polling,
+    mock_asyncio_run,
+    mock_update_db,
 ):
     """
     Test that main.py initializes in POLLING mode (default) correctly.
@@ -26,12 +31,22 @@ def test_main_polling_setup(
 
     # Verify execution flow
     assert mock_start_polling.called or mock_asyncio_run.called
+    mock_update_db.assert_called_once_with()
+    assert mock_asyncio_run.call_args_list[0].args[0] is mock_update_db.return_value
 
 
+@patch("database.models.update_db", new_callable=MagicMock)
+@patch("main.asyncio.run")
 @patch("aiohttp.web.run_app")
 @patch("main.bot_config")
 @patch("main.RedisStorage")
-def test_main_webhook_setup(mock_redis_storage, mock_config, mock_run_app):
+def test_main_webhook_setup(
+    mock_redis_storage,
+    mock_config,
+    mock_run_app,
+    mock_asyncio_run,
+    mock_update_db,
+):
     """
     Test that main.py initializes in WEBHOOK mode (ENVIRONMENT=production).
     """
@@ -53,3 +68,5 @@ def test_main_webhook_setup(mock_redis_storage, mock_config, mock_run_app):
 
     # Verify web app run
     assert mock_run_app.called
+    mock_update_db.assert_called_once_with()
+    assert mock_asyncio_run.call_args_list[0].args[0] is mock_update_db.return_value
