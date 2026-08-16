@@ -55,3 +55,7 @@ Thumbs.db
 /deploy/
 /.shotgun/
 .worktrees/
+
+# Codespaces belief map
+.belief_map.sexp
+.belief_map_cache.json
