@@ -10,7 +10,10 @@ from sqlalchemy import (
     event,
     Boolean,
     Integer,
+    Index,
     JSON,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -63,6 +66,45 @@ class Messages(Base):
     chat_for_id: Mapped[int] = mapped_column(BigInteger)
 
 
+class DeliveryJob(Base):
+    __tablename__ = "delivery_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "bot_id",
+            "source_chat_id",
+            "source_message_id",
+            "delivery_kind",
+            name="uq_delivery_job_source",
+        ),
+        Index("ix_delivery_jobs_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_delivery_jobs_status_updated", "status", "updated_at"),
+    )
+
+    job_id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(), default=datetime.datetime.now
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(), default=datetime.datetime.now, onupdate=datetime.datetime.now
+    )
+    bot_id: Mapped[int] = mapped_column(BigInteger)
+    source_chat_id: Mapped[int] = mapped_column(BigInteger)
+    source_message_id: Mapped[int] = mapped_column(BigInteger)
+    delivery_kind: Mapped[str] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(), nullable=True
+    )
+    last_published_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    result_message_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class BotSettings(Base):
     __tablename__ = "bot_settings"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -96,6 +138,20 @@ async def update_db():
             await conn.exec_driver_sql(
                 "ALTER TABLE bot_settings ADD COLUMN spam_block_words JSON DEFAULT '[]'"
             )
+        result = await conn.exec_driver_sql("PRAGMA table_info(delivery_jobs)")
+        delivery_columns = {row[1] for row in result}
+        if "lease_token" not in delivery_columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE delivery_jobs ADD COLUMN lease_token VARCHAR"
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_delivery_jobs_status_next_attempt "
+            "ON delivery_jobs (status, next_attempt_at)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_delivery_jobs_status_updated "
+            "ON delivery_jobs (status, updated_at)"
+        )
 
 
 async def save_message_ids(

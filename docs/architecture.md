@@ -9,6 +9,10 @@ Current code is organized by technical areas:
 - `database/` — persistence models and repositories
 - `tests/` — automated tests
 
+Critical support-message delivery uses a durable SQLite job record as its source
+of truth and a Redis Stream/FastStream worker as the execution transport. Webhook
+updates are acknowledged only after the outbound delivery job is persisted.
+
 This structure is functional and should remain stable while migration happens in small slices.
 
 ## Target State

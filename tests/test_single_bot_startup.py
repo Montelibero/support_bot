@@ -1,13 +1,25 @@
+import inspect
 from unittest.mock import MagicMock, patch
 from single_bot import main
+
+
+def test_single_bot_polling_injects_delivery_queue():
+    source = inspect.getsource(main)
+    assert "update_db()" in source
+    assert "delivery_queue=delivery_queue" in source
 
 
 @patch("single_bot.asyncio.run")
 @patch("single_bot.Dispatcher.start_polling", new_callable=MagicMock)
 @patch("single_bot.bot_config")
 @patch("single_bot.make_bot")
+@patch("database.models.update_db", new_callable=MagicMock)
 def test_single_bot_setup(
-    mock_make_bot, mock_config, mock_start_polling, mock_asyncio_run
+    mock_update_db,
+    mock_make_bot,
+    mock_config,
+    mock_start_polling,
+    mock_asyncio_run,
 ):
     """
     Test that single_bot.py initializes components correctly
@@ -32,6 +44,7 @@ def test_single_bot_setup(
 
     # Verify start_polling was called
     assert mock_start_polling.called or mock_asyncio_run.called
+    mock_update_db.assert_called_once_with()
 
     # Check if storage was initialized (indirectly via Dispatcher init in main)
     # Since we can't easily access the local dispatcher variable inside main,

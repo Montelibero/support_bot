@@ -3,20 +3,65 @@ import os
 from contextlib import suppress
 
 import sentry_sdk
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.webhook.aiohttp_server import TokenBasedRequestHandler
 from aiogram_dialog import (
     setup_dialogs,
 )
 from loguru import logger
+from faststream.redis import RedisBroker
 
+from bot.delivery_queue import DeliveryQueue
 from bot.routers.admin import router as admin_router
 from bot.routers.admin_dialog import dialog_all
-from bot.routers.supports import router as support_router
+from bot.routers.supports import execute_delivery_payload, router as support_router
 from config.bot_config import bot_config, make_bot
+from database.models import session_maker
+from database.repositories import Repo
+
+DELIVERY_QUEUE_KEY = web.AppKey("delivery_queue", DeliveryQueue)
+
+
+class LocalApiTokenBasedRequestHandler(TokenBasedRequestHandler):
+    def __init__(self, *args, bots_by_id: dict[int, Bot], **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.bots_by_id = bots_by_id
+
+    async def resolve_bot(self, request: web.Request) -> Bot:
+        token = request.match_info["bot_token"]
+        if token not in self.bots:
+            bot = make_bot(token)
+            self.bots[token] = bot
+            self.bots_by_id[bot.id] = bot
+        return self.bots[token]
+
+
+def create_delivery_queue(bots_by_id: dict[int, Bot]) -> DeliveryQueue:
+    broker = RedisBroker(bot_config.REDIS_URL)
+    queue = DeliveryQueue(session_maker, broker)
+
+    async def deliver(payload: dict) -> list[int]:
+        bot = bots_by_id[int(payload["bot_id"])]
+        async with session_maker() as session:
+            return await execute_delivery_payload(
+                payload, bot, Repo(session), bot_config
+            )
+
+    queue.register_worker(deliver)
+    return queue
+
+
+async def start_delivery_queue(app) -> None:
+    await app[DELIVERY_QUEUE_KEY].start()
+
+
+async def stop_delivery_queue(app) -> None:
+    await app[DELIVERY_QUEUE_KEY].stop()
 
 
 async def aiogram_on_startup_polling(dispatcher: Dispatcher, bot: Bot) -> None:
@@ -147,10 +192,8 @@ def main():
     multibot_dispatcher.include_router(support_router)
 
     if os.environ.get("ENVIRONMENT") == "production":
-        from aiohttp import web
         from aiogram.webhook.aiohttp_server import (
             SimpleRequestHandler,
-            TokenBasedRequestHandler,
             setup_application,
         )
 
@@ -162,15 +205,29 @@ def main():
             app, path=f"/{bot_config.SECRET_URL}/{bot_config.MAIN_BOT_PATH}"
         )
         bot_settings = {"default": DefaultBotProperties(parse_mode="HTML")}
-        TokenBasedRequestHandler(
+        support_bots = {
+            bot_setting.token: make_bot(bot_setting.token)
+            for bot_setting in bot_config.get_bot_settings()
+            if bot_setting.can_work
+        }
+        bots_by_id = {
+            support_bot.id: support_bot for support_bot in support_bots.values()
+        }
+        delivery_queue = create_delivery_queue(bots_by_id)
+        support_request_handler = LocalApiTokenBasedRequestHandler(
             dispatcher=multibot_dispatcher,
-            bots={
-                bot_setting.token: make_bot(bot_setting.token)
-                for bot_setting in bot_config.get_bot_settings()
-                if bot_setting.can_work
-            },
+            bots_by_id=bots_by_id,
+            handle_in_background=False,
             bot_settings=bot_settings,
-        ).register(app, path=f"/{bot_config.SECRET_URL}/{bot_config.OTHER_BOTS_PATH}")
+            delivery_queue=delivery_queue,
+        )
+        support_request_handler.bots.update(support_bots)
+        app[DELIVERY_QUEUE_KEY] = delivery_queue
+        app.on_startup.append(start_delivery_queue)
+        app.on_shutdown.append(stop_delivery_queue)
+        support_request_handler.register(
+            app, path=f"/{bot_config.SECRET_URL}/{bot_config.OTHER_BOTS_PATH}"
+        )
 
         setup_application(app, main_dispatcher, bot=bot)
         setup_application(app, multibot_dispatcher)

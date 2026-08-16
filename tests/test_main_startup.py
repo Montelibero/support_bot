@@ -1,6 +1,37 @@
 import os
+import inspect
+import pytest
 from unittest.mock import patch, MagicMock
-from main import main
+from main import LocalApiTokenBasedRequestHandler, main
+
+
+def test_support_webhook_waits_for_durable_enqueue():
+    source = inspect.getsource(main)
+
+    assert "handle_in_background=False" in source
+    assert "delivery_queue=delivery_queue" in source
+
+
+@pytest.mark.asyncio
+async def test_runtime_bot_uses_factory_and_registers_for_delivery():
+    registry = {}
+    dispatcher = MagicMock()
+    handler = LocalApiTokenBasedRequestHandler(
+        dispatcher=dispatcher,
+        bots_by_id=registry,
+        handle_in_background=False,
+    )
+    request = MagicMock()
+    request.match_info = {"bot_token": "123:runtime"}
+    created = MagicMock()
+    created.id = 123
+
+    with patch("main.make_bot", return_value=created) as factory:
+        resolved = await handler.resolve_bot(request)
+
+    assert resolved is created
+    assert registry == {123: created}
+    factory.assert_called_once_with("123:runtime")
 
 
 @patch("database.models.update_db", new_callable=MagicMock)

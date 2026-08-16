@@ -23,6 +23,7 @@ from config.bot_config import SupportBotSettings, BotConfig
 from database.repositories import Repo
 from bot.customizations import get_customization, get_all_routers
 from bot.reactions import safe_react_to_message, safe_set_message_reaction
+from bot.delivery_queue import DeliveryQueue
 
 router = Router()
 router.include_router(get_all_routers())
@@ -440,9 +441,11 @@ async def cmd_resend(
     repo: Repo,
     bot_settings: SupportBotSettings,
     config: BotConfig,
+    delivery_queue: DeliveryQueue | None = None,
 ):
     logger.info(
-        f"Support bot message - Username: {(await bot.get_me()).username}, Chat ID: {message.chat.id}"
+        f"Support bot message - Username: {bot_settings.username}, "
+        f"Bot ID: {bot.id}, Chat ID: {message.chat.id}"
     )
     if message.chat.id == bot_settings.master_chat:
         reply_message = message.reply_to_message
@@ -474,17 +477,28 @@ async def cmd_resend(
                     "где 123 ID пользователя и сообщение будет ему отправлено."
                 )
                 return
-            await resend_message_plus(
-                message=message,
-                bot=bot,
-                repo=repo,
-                chat_id=resend_info.chat_from_id,
-                text=f"{message.html_text}\n\nВам ответил {agent_name}",
-                reply_to_message_id=resend_info.message_id,
-                support_user_id=support_user_id,
-                message_thread_id=None,
-                config=config,
-            )
+            resend_kwargs = {
+                "message": message,
+                "chat_id": resend_info.chat_from_id,
+                "text": f"{message.html_text}\n\nВам ответил {agent_name}",
+                "reply_to_message_id": resend_info.message_id,
+                "support_user_id": support_user_id,
+                "message_thread_id": None,
+                "reply_markup": None,
+            }
+            if delivery_queue is not None:
+                await enqueue_resend_message_plus(
+                    delivery_queue=delivery_queue,
+                    bot_id=bot.id,
+                    **resend_kwargs,
+                )
+            else:
+                await resend_message_plus(
+                    bot=bot,
+                    repo=repo,
+                    config=config,
+                    **resend_kwargs,
+                )
         else:
             await cmd_alert_bad(message, bot, bot_settings)
     elif message.chat.type == "private":
@@ -521,18 +535,28 @@ async def cmd_resend(
         if bot_settings.use_auto_reply:
             text += "\n\n отправлен автоответ 🤖"
 
-        await resend_message_plus(
-            message=message,
-            bot=bot,
-            repo=repo,
-            chat_id=master_chat,
-            text=text,
-            reply_to_message_id=reply_to_message_id,
-            support_user_id=None,
-            message_thread_id=bot_settings.master_thread,
-            config=config,
-            reply_markup=reply_markup,
-        )
+        resend_kwargs = {
+            "message": message,
+            "chat_id": master_chat,
+            "text": text,
+            "reply_to_message_id": reply_to_message_id,
+            "support_user_id": None,
+            "message_thread_id": bot_settings.master_thread,
+            "reply_markup": reply_markup,
+        }
+        if delivery_queue is not None:
+            await enqueue_resend_message_plus(
+                delivery_queue=delivery_queue,
+                bot_id=bot.id,
+                **resend_kwargs,
+            )
+        else:
+            await resend_message_plus(
+                bot=bot,
+                repo=repo,
+                config=config,
+                **resend_kwargs,
+            )
 
         if bot_settings.use_auto_reply:
             await message.reply(bot_settings.auto_reply, disable_web_page_preview=True)
@@ -622,6 +646,151 @@ async def cmd_edit_msg(
             message_thread_id=bot_settings.master_thread,
             config=config,
         )
+
+
+async def enqueue_resend_message_plus(
+    *,
+    delivery_queue: DeliveryQueue,
+    message: types.Message,
+    bot_id: int,
+    chat_id: int,
+    text: str,
+    reply_to_message_id: int | None,
+    support_user_id: int | None,
+    message_thread_id: int | None,
+    reply_markup: types.InlineKeyboardMarkup | None,
+):
+    serialized_markup = (
+        reply_markup.model_dump(mode="json", exclude_none=True)
+        if reply_markup is not None
+        else None
+    )
+    payload = {
+        "operation": "resend_message_plus",
+        "bot_id": bot_id,
+        "message": message.model_dump(mode="json", exclude_none=True),
+        "chat_id": chat_id,
+        "text": text,
+        "reply_to_message_id": reply_to_message_id,
+        "support_user_id": support_user_id,
+        "message_thread_id": message_thread_id,
+        "reply_markup": serialized_markup,
+    }
+    if message.photo and message.media_group_id:
+        await delivery_queue.enqueue_album_item(
+            bot_id=bot_id,
+            source_chat_id=message.chat.id,
+            media_group_id=message.media_group_id,
+            delivery_kind=f"resend_album:{chat_id}",
+            payload={
+                **payload,
+                "operation": "resend_media_group",
+                "media_group_id": message.media_group_id,
+                "messages": [payload.pop("message")],
+            },
+        )
+        return
+    await delivery_queue.enqueue(
+        bot_id=bot_id,
+        source_chat_id=message.chat.id,
+        source_message_id=message.message_id,
+        delivery_kind=f"resend:{chat_id}",
+        payload=payload,
+    )
+
+
+async def execute_delivery_payload(
+    payload: dict,
+    bot: Bot,
+    repo: Repo,
+    config: BotConfig,
+) -> list[int]:
+    operation = payload.get("operation")
+    if operation == "resend_media_group":
+        messages = [
+            types.Message.model_validate(item, context={"bot": bot})
+            for item in payload["messages"]
+        ]
+        media: list[MediaUnion] = [
+            types.InputMediaPhoto(media=message.photo[-1].file_id)
+            for message in messages
+            if message.photo
+        ]
+        try:
+            sent_album = await bot.send_media_group(
+                chat_id=payload["chat_id"],
+                message_thread_id=payload.get("message_thread_id"),
+                media=media,
+                reply_to_message_id=payload.get("reply_to_message_id"),
+            )
+        except TelegramBadRequest as ex:
+            error = str(ex).lower()
+            missing_reply = (
+                "message reply" in error
+                or "message to be replied" in error
+                or "not found" in error
+            )
+            if payload.get("reply_to_message_id") is None or not missing_reply:
+                raise
+            return await execute_delivery_payload(
+                {**payload, "reply_to_message_id": None}, bot, repo, config
+            )
+        result_ids: list[int] = []
+        for source, sent in zip(messages, sent_album, strict=True):
+            result_ids.append(sent.message_id)
+            await repo.save_message_ids(
+                bot_id=bot.id,
+                user_id=payload.get("support_user_id"),
+                message_id=source.message_id,
+                resend_id=sent.message_id,
+                chat_from_id=source.chat.id,
+                chat_for_id=sent.chat.id,
+            )
+        sent_text = await bot.send_message(
+            chat_id=payload["chat_id"],
+            text=payload["text"],
+            message_thread_id=payload.get("message_thread_id"),
+            reply_to_message_id=payload.get("reply_to_message_id"),
+            reply_markup=(
+                types.InlineKeyboardMarkup.model_validate(payload["reply_markup"])
+                if payload.get("reply_markup") is not None
+                else None
+            ),
+        )
+        result_ids.append(sent_text.message_id)
+        first = messages[0]
+        await repo.save_message_ids(
+            bot_id=bot.id,
+            user_id=payload.get("support_user_id"),
+            message_id=first.message_id,
+            resend_id=sent_text.message_id,
+            chat_from_id=first.chat.id,
+            chat_for_id=sent_text.chat.id,
+        )
+        return result_ids
+    if operation != "resend_message_plus":
+        raise ValueError(f"Unsupported delivery operation: {payload.get('operation')}")
+    message = types.Message.model_validate(payload["message"], context={"bot": bot})
+    reply_markup_data = payload.get("reply_markup")
+    reply_markup = (
+        types.InlineKeyboardMarkup.model_validate(reply_markup_data)
+        if reply_markup_data is not None
+        else None
+    )
+    result = await resend_message_plus(
+        message=message,
+        bot=bot,
+        repo=repo,
+        chat_id=payload["chat_id"],
+        text=payload["text"],
+        reply_to_message_id=payload.get("reply_to_message_id"),
+        support_user_id=payload.get("support_user_id"),
+        message_thread_id=payload.get("message_thread_id"),
+        config=config,
+        do_exception=True,
+        reply_markup=reply_markup,
+    )
+    return result or []
 
 
 async def resend_message_plus(
@@ -891,15 +1060,14 @@ async def resend_message_plus(
             f"src_chat_id={message.chat.id}, dst_chat_id={chat_id}, "
             f"message_id={message.message_id}: {ex}"
         )
+        if do_exception:
+            raise
         current_settings = config.get_bot_setting(bot.id)
         if (
             current_settings is not None
             and message.chat.id == current_settings.master_chat
         ):
-            if do_exception:
-                raise ex
-            else:
-                await message.answer(f"Ошибка отправки\n{ex}")
+            await message.answer(f"Ошибка отправки\n{ex}")
         else:
             await message.answer("Send error =(")
 
@@ -908,15 +1076,14 @@ async def resend_message_plus(
             f"resend_message_plus failed — bot_id={bot.id}, src_chat_id={message.chat.id}, "
             f"dst_chat_id={chat_id}, message_id={message.message_id}: {ex}"
         )
+        if do_exception:
+            raise
         current_settings = config.get_bot_setting(bot.id)
         if (
             current_settings is not None
             and message.chat.id == current_settings.master_chat
         ):
-            if do_exception:
-                raise ex
-            else:
-                await message.answer(f"Ошибка отправки\n{ex}")
+            await message.answer(f"Ошибка отправки\n{ex}")
         else:
             await message.answer("Send error =(")
 

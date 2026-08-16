@@ -9,6 +9,7 @@ dependencies = [
     "aiohttp>=3.13.3",
     "aiosqlite>=0.22.1",
     "environs>=14.5.0",
+    "faststream[redis]>=0.7.4",
     "loguru~=0.7.2",
     "pydantic>=2.12.5",
     "redis>=7.1.0",

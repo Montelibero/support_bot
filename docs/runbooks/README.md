@@ -21,6 +21,9 @@ Each runbook should include:
 - [reactions-in-restricted-chats.md](reactions-in-restricted-chats.md) —
   что делать, если бот не ставит реакции в чате и в логи сыпется
   `Bad Request: REACTION_INVALID`.
+- [durable-telegram-delivery.md](durable-telegram-delivery.md) —
+  диагностика и восстановление очереди доставки сообщений после временных
+  ошибок Telegram Bot API или Redis.
 - (to add) Bot startup failures
 - (to add) Webhook delivery issues
 - (to add) Redis connectivity issues
