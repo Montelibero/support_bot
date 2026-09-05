@@ -40,6 +40,7 @@ class SupportBotSettings(BaseModel):
     local_names: dict = {}
     use_auto_reply: bool = False
     block_links: bool = True
+    ignore_cjk_messages: bool = True
     spam_block_words: list[str] = []
     auto_reply: str = (
         "Message automatically forwarded to support. Please wait for a response."
@@ -165,6 +166,11 @@ class BotConfig:
                         else row["local_names"],
                         "use_auto_reply": bool(row["use_auto_reply"]),
                         "block_links": bool(row["block_links"]),
+                        "ignore_cjk_messages": (
+                            bool(row["ignore_cjk_messages"])
+                            if "ignore_cjk_messages" in columns
+                            else True
+                        ),
                         "spam_block_words": json.loads(row["spam_block_words"])
                         if "spam_block_words" in columns
                         and isinstance(row["spam_block_words"], str)
@@ -248,6 +254,7 @@ class BotConfig:
                     bot_db.local_names = settings.local_names
                     bot_db.use_auto_reply = settings.use_auto_reply
                     bot_db.block_links = settings.block_links
+                    bot_db.ignore_cjk_messages = settings.ignore_cjk_messages
                     bot_db.spam_block_words = settings.spam_block_words
                     bot_db.auto_reply = settings.auto_reply
                     bot_db.ignore_users = settings.ignore_users
@@ -271,6 +278,7 @@ class BotConfig:
                         local_names=settings.local_names,
                         use_auto_reply=settings.use_auto_reply,
                         block_links=settings.block_links,
+                        ignore_cjk_messages=settings.ignore_cjk_messages,
                         spam_block_words=settings.spam_block_words,
                         auto_reply=settings.auto_reply,
                         ignore_users=settings.ignore_users,

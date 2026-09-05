@@ -350,6 +350,7 @@ async def info_getter(dialog_manager: DialogManager, state: FSMContext, **kwargs
     ignore_commands_text = "[✔️]" if bot_setting.ignore_commands else "[❌]"
     use_auto_reply_text = "[✔️]" if bot_setting.use_auto_reply else "[❌]"
     block_links_text = "[✔️]" if bot_setting.block_links else "[❌]"
+    ignore_cjk_messages_text = "[✔️]" if bot_setting.ignore_cjk_messages else "[❌]"
 
     chat_info = f"Чат: {bot_setting.master_chat}"
     if bot_setting.master_thread:
@@ -398,6 +399,8 @@ async def info_getter(dialog_manager: DialogManager, state: FSMContext, **kwargs
         "spam_block_words_mini": spam_block_words_mini,
         "block_links": bot_setting.block_links,
         "block_links_text": block_links_text,
+        "ignore_cjk_messages": bot_setting.ignore_cjk_messages,
+        "ignore_cjk_messages_text": ignore_cjk_messages_text,
     }
 
 
@@ -433,6 +436,9 @@ async def button_clicked(
         await config.update_bot_setting(bot_setting)
     elif button.widget_id == "block_links":
         bot_setting.block_links = not bot_setting.block_links
+        await config.update_bot_setting(bot_setting)
+    elif button.widget_id == "ignore_cjk_messages":
+        bot_setting.ignore_cjk_messages = not bot_setting.ignore_cjk_messages
         await config.update_bot_setting(bot_setting)
     elif button.widget_id == "can_work":
         if not bot_setting.can_work:
@@ -508,7 +514,8 @@ window_bot_config = Window(
         "Игнорировать команды - бот будет игнорировать команды с установкой имени и прочие, "
         "требуется если несколько ботов поддержки слушают один чат\n\n"
         "Блокировать контент - бот будет блокировать сообщения со ссылками и медиа от пользователей, которым еще не ответил саппорт. "
-        "При включении только обычный текст разрешен, все остальное (фото, видео, стикеры, ссылки) считается спамом."
+        "При включении только обычный текст разрешен, все остальное (фото, видео, стикеры, ссылки) считается спамом.\n\n"
+        "Игнорировать CJK-иероглифы - бот молча отбрасывает сообщения с китайскими иероглифами до первого ответа поддержки."
     ),
     SwitchTo(
         Const("Изменить приветствие"),
@@ -563,6 +570,11 @@ window_bot_config = Window(
     Button(
         text=Format("{block_links_text} Блокировать контент"),
         id="block_links",
+        on_click=button_clicked,
+    ),
+    Button(
+        text=Format("{ignore_cjk_messages_text} Игнорировать CJK-иероглифы"),
+        id="ignore_cjk_messages",
         on_click=button_clicked,
     ),
     SwitchTo(

@@ -6,6 +6,7 @@ import datetime
 from aiogram.types import MessageEntity
 
 from bot.routers.supports import router as support_router
+from config.bot_config import SupportBotSettings
 from tests.conftest import MOCK_SERVER_URL, TEST_BOT_TOKEN
 
 
@@ -39,6 +40,10 @@ def find_send_message(mock_server, chat_id: int):
         ),
         None,
     )
+
+
+def test_cjk_filter_is_enabled_by_default():
+    assert SupportBotSettings.model_fields["ignore_cjk_messages"].default is True
 
 
 @pytest.mark.asyncio
@@ -171,6 +176,131 @@ async def test_spam_block_words_allowed_when_block_links_disabled(mock_server, r
     assert req_forward is not None
     assert "USDT question with disabled protection" in req_forward["data"]["text"]
 
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_cjk_message_is_silently_ignored_before_support_reply(mock_server, repo):
+    from unittest.mock import MagicMock
+
+    master_chat_id = -100999
+    user_id = 556
+    session = AiohttpSession(api=TelegramAPIServer.from_base(MOCK_SERVER_URL))
+    bot = Bot(token=TEST_BOT_TOKEN, session=session)
+
+    mock_config = MagicMock()
+    mock_config.media_groups = {}
+    mock_settings = MagicMock()
+    mock_settings.master_chat = master_chat_id
+    mock_settings.block_links = False
+    mock_settings.ignore_cjk_messages = True
+    mock_settings.spam_block_words = []
+    mock_settings.ignore_users = []
+    mock_settings.special_commands = 0
+    mock_settings.use_auto_reply = True
+    mock_settings.auto_reply = "Automatic reply"
+    mock_settings.mark_bad = False
+    mock_config.get_bot_setting.return_value = mock_settings
+
+    dp = build_dispatcher(repo, mock_config, mock_settings)
+    update = types.Update(
+        update_id=103,
+        message=types.Message(
+            message_id=1003,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=user_id, type="private"),
+            from_user=types.User(id=user_id, is_bot=False, first_name="User"),
+            text="同城嫖娼",
+        ),
+    )
+
+    await dp.feed_update(bot=bot, update=update)
+
+    assert find_send_message(mock_server, master_chat_id) is None
+    assert find_send_message(mock_server, user_id) is None
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_cjk_message_is_forwarded_when_filter_is_disabled(mock_server, repo):
+    from unittest.mock import MagicMock
+
+    master_chat_id = -100999
+    user_id = 557
+    session = AiohttpSession(api=TelegramAPIServer.from_base(MOCK_SERVER_URL))
+    bot = Bot(token=TEST_BOT_TOKEN, session=session)
+
+    mock_config = MagicMock()
+    mock_config.media_groups = {}
+    mock_settings = MagicMock()
+    mock_settings.master_chat = master_chat_id
+    mock_settings.master_thread = None
+    mock_settings.block_links = False
+    mock_settings.ignore_cjk_messages = False
+    mock_settings.spam_block_words = []
+    mock_settings.ignore_users = []
+    mock_settings.special_commands = 0
+    mock_settings.use_auto_reply = False
+    mock_settings.mark_bad = False
+    mock_config.get_bot_setting.return_value = mock_settings
+
+    dp = build_dispatcher(repo, mock_config, mock_settings)
+    update = types.Update(
+        update_id=104,
+        message=types.Message(
+            message_id=1004,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=user_id, type="private"),
+            from_user=types.User(id=user_id, is_bot=False, first_name="User"),
+            text="单身交友",
+        ),
+    )
+
+    await dp.feed_update(bot=bot, update=update)
+
+    assert find_send_message(mock_server, master_chat_id) is not None
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_cjk_message_is_forwarded_after_support_reply(mock_server, repo):
+    from unittest.mock import MagicMock
+
+    master_chat_id = -100999
+    user_id = 558
+    session = AiohttpSession(api=TelegramAPIServer.from_base(MOCK_SERVER_URL))
+    bot = Bot(token=TEST_BOT_TOKEN, session=session)
+
+    mock_config = MagicMock()
+    mock_config.media_groups = {}
+    mock_settings = MagicMock()
+    mock_settings.master_chat = master_chat_id
+    mock_settings.master_thread = None
+    mock_settings.block_links = False
+    mock_settings.ignore_cjk_messages = True
+    mock_settings.spam_block_words = []
+    mock_settings.ignore_users = []
+    mock_settings.special_commands = 0
+    mock_settings.use_auto_reply = False
+    mock_settings.mark_bad = False
+    mock_config.get_bot_setting.return_value = mock_settings
+
+    await repo.save_message_ids(bot.id, 888, 200, 201, master_chat_id, user_id)
+    dp = build_dispatcher(repo, mock_config, mock_settings)
+    update = types.Update(
+        update_id=105,
+        message=types.Message(
+            message_id=1005,
+            date=datetime.datetime.now(),
+            chat=types.Chat(id=user_id, type="private"),
+            from_user=types.User(id=user_id, is_bot=False, first_name="User"),
+            text="线下碰面",
+        ),
+    )
+
+    await dp.feed_update(bot=bot, update=update)
+
+    assert find_send_message(mock_server, master_chat_id) is not None
     await bot.session.close()
 
 

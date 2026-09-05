@@ -124,6 +124,7 @@ class BotSettings(Base):
     local_names: Mapped[dict] = mapped_column(JSON, default=dict)
     use_auto_reply: Mapped[bool] = mapped_column(Boolean, default=False)
     block_links: Mapped[bool] = mapped_column(Boolean, default=True)
+    ignore_cjk_messages: Mapped[bool] = mapped_column(Boolean, default=True)
     spam_block_words: Mapped[list] = mapped_column(JSON, default=list)
     auto_reply: Mapped[str] = mapped_column(String, default="")
     ignore_users: Mapped[list] = mapped_column(JSON, default=list)
@@ -137,6 +138,10 @@ async def update_db():
         if "spam_block_words" not in columns:
             await conn.exec_driver_sql(
                 "ALTER TABLE bot_settings ADD COLUMN spam_block_words JSON DEFAULT '[]'"
+            )
+        if "ignore_cjk_messages" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE bot_settings ADD COLUMN ignore_cjk_messages BOOLEAN DEFAULT 1"
             )
         result = await conn.exec_driver_sql("PRAGMA table_info(delivery_jobs)")
         delivery_columns = {row[1] for row in result}

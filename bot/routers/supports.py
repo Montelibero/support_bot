@@ -141,6 +141,20 @@ def _has_spam_block_word(message: types.Message, block_words: list[str]) -> bool
     return any(word.strip().casefold() in text for word in block_words if word.strip())
 
 
+def _contains_cjk_ideograph(message: types.Message) -> bool:
+    text = message.text or message.caption
+    if text is None:
+        return False
+
+    return any(
+        "\u3400" <= character <= "\u4dbf"
+        or "\u4e00" <= character <= "\u9fff"
+        or "\uf900" <= character <= "\ufaff"
+        or "\U00020000" <= character <= "\U000323af"
+        for character in text
+    )
+
+
 def _should_block_pre_reply_content(
     message: types.Message, bot_settings: SupportBotSettings
 ) -> bool:
@@ -507,6 +521,12 @@ async def cmd_resend(
         user_has_reply = await repo.has_user_received_reply(
             bot_id=bot.id, user_id=from_user.id
         )
+        if (
+            not user_has_reply
+            and bot_settings.ignore_cjk_messages
+            and _contains_cjk_ideograph(message)
+        ):
+            return
         if not user_has_reply and bot_settings.block_links:
             if _should_block_pre_reply_content(message, bot_settings):
                 await message.reply(SPAM_BLOCK_REPLY_TEXT)
