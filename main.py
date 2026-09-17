@@ -1,6 +1,7 @@
 import asyncio
 import os
 from contextlib import suppress
+from functools import partial
 
 import sentry_sdk
 from aiohttp import web
@@ -86,11 +87,29 @@ async def aiogram_on_shutdown_polling(dispatcher: Dispatcher, bot: Bot) -> None:
     logger.info("Stopped polling")
 
 
-async def aiogram_on_startup_webhook(dispatcher: Dispatcher, bot: Bot) -> None:
+def resolve_allowed_update_types(*dispatchers: Dispatcher) -> list[str]:
+    """Merge update types of all dispatchers that share one webhook setup.
+
+    Support handlers live on a separate dispatcher; a type missing from
+    the subscription makes Telegram silently drop those updates.
+    """
+    allowed_updates: list[str] = []
+    for dispatcher in dispatchers:
+        for update_type in dispatcher.resolve_used_update_types():
+            if update_type not in allowed_updates:
+                allowed_updates.append(update_type)
+    return allowed_updates
+
+
+async def aiogram_on_startup_webhook(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    extra_dispatchers: tuple[Dispatcher, ...] = (),
+) -> None:
     git_commit = os.environ.get("GIT_COMMIT", "unknown")
     logger.info(f"Starting webhook — GIT_COMMIT={git_commit}")
     # Определяем типы обновлений, которые используются в обработчиках
-    allowed_updates = dispatcher.resolve_used_update_types()
+    allowed_updates = resolve_allowed_update_types(dispatcher, *extra_dispatchers)
     if "message_reaction" not in allowed_updates:
         allowed_updates.append("message_reaction")
     if "channel_post" not in allowed_updates:
@@ -197,7 +216,12 @@ def main():
             setup_application,
         )
 
-        main_dispatcher.startup.register(aiogram_on_startup_webhook)
+        main_dispatcher.startup.register(
+            partial(
+                aiogram_on_startup_webhook,
+                extra_dispatchers=(multibot_dispatcher,),
+            )
+        )
         main_dispatcher.shutdown.register(aiogram_on_shutdown_webhook)
 
         app = web.Application()
