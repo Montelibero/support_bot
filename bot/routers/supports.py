@@ -1194,17 +1194,19 @@ async def message_reaction(
         return
 
     if message.chat.id == bot_settings.master_chat:
-        # Check if Admin is reacting to a forwarded ticket (resend_id=msg_id)
+        # Only reactions to the client's forwarded ticket are proxied to the
+        # user; reactions to the agent's own reply stay in the master chat.
         send_info = await repo.get_message_resend_info(
             bot_id=bot.id, resend_id=message.message_id, chat_for_id=message.chat.id
         )
-        # If not, check if Admin is reacting to their own reply (message_id=msg_id)
-        if not send_info:
-            send_info = await repo.get_message_resend_info(
+        if send_info is None:
+            own_reply = await repo.get_message_resend_info(
                 bot_id=bot.id,
                 message_id=message.message_id,
                 chat_from_id=message.chat.id,
             )
+            if own_reply is not None:
+                return
 
         if send_info is None:
             if bot_settings.mark_bad:
@@ -1217,15 +1219,9 @@ async def message_reaction(
                 )
             return
 
-        # Determine target chat and message ID
-        if send_info.chat_for_id == message.chat.id:
-            # We found it via resend_id (Forwarded Ticket). Target is source (User).
-            target_chat = send_info.chat_from_id
-            target_msg = send_info.message_id
-        else:
-            # We found it via message_id (Admin Reply). Target is destination (User).
-            target_chat = send_info.chat_for_id
-            target_msg = send_info.resend_id
+        # Found via resend_id (Forwarded Ticket). Target is source (User).
+        target_chat = send_info.chat_from_id
+        target_msg = send_info.message_id
 
         await safe_set_message_reaction(
             bot,

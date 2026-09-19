@@ -112,7 +112,8 @@ async def test_reaction_matrix(repo):
     assert 300 in calls
     bot.set_message_reaction.reset_mock()
 
-    # 2.B: Admin reacts to 300 (Their own reply) -> Should exist on 400
+    # 2.B: Admin reacts to 300 (Their own reply) -> stays in the master chat,
+    # nothing is proxied to the user and no ack/mark reactions are set
     update_2b = types.Update(
         update_id=4,
         message_reaction=MessageReactionUpdated(
@@ -125,6 +126,22 @@ async def test_reaction_matrix(repo):
         ),
     )
     await dp.feed_update(bot=bot, update=update_2b)
-    assert bot.set_message_reaction.called, "Admin reacting to their own reply failed"
-    calls = [c.kwargs["message_id"] for c in bot.set_message_reaction.call_args_list]
-    assert 400 in calls
+    bot.set_message_reaction.assert_not_called()
+
+    # 2.C: Admin reacts to an unknown message -> mark_bad flags it with 👀
+    update_2c = types.Update(
+        update_id=5,
+        message_reaction=MessageReactionUpdated(
+            chat=Chat(id=MASTER_ID, type="supergroup"),
+            message_id=999,
+            user=User(id=888, is_bot=False, first_name="Admin"),
+            new_reaction=[ReactionTypeEmoji(emoji="E")],
+            old_reaction=[],
+            date=datetime.datetime.fromtimestamp(123),
+        ),
+    )
+    await dp.feed_update(bot=bot, update=update_2c)
+    bot.set_message_reaction.assert_called_once()
+    call = bot.set_message_reaction.call_args.kwargs
+    assert call["message_id"] == 999
+    assert call["reaction"] == [ReactionTypeEmoji(emoji="👀")]
