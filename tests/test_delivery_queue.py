@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
 from faststream import AckPolicy
 from datetime import datetime, timedelta
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import models, repositories
@@ -426,6 +426,47 @@ async def test_cmd_resend_enqueues_private_support_message():
 
     queue.enqueue.assert_awaited_once()
     assert queue.enqueue.await_args.kwargs["delivery_kind"] == "resend:40"
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_delivered_jobs_only(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.db'}")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(models.Base.metadata.create_all)
+
+    async with session_factory() as session:
+        repo = repositories.DeliveryRepo(session)
+        delivered = await repo.enqueue(
+            bot_id=10,
+            source_chat_id=20,
+            source_message_id=41,
+            delivery_kind="support_forward",
+            payload={"text": "old delivered"},
+        )
+        await repo.enqueue(
+            bot_id=10,
+            source_chat_id=20,
+            source_message_id=42,
+            delivery_kind="support_forward",
+            payload={"text": "still pending"},
+        )
+        await session.execute(
+            update(models.DeliveryJob)
+            .where(models.DeliveryJob.job_id == delivered.job_id)
+            .values(status="succeeded")
+        )
+        await session.commit()
+
+    queue = delivery_queue.DeliveryQueue(session_factory, AsyncMock())
+    await queue.start()
+    async with session_factory() as session:
+        remaining = (await session.scalars(select(models.DeliveryJob))).all()
+    await queue.stop()
+    await engine.dispose()
+
+    assert len(remaining) == 1
+    assert remaining[0].status == "pending"
 
 
 def test_register_worker_nacks_unhandled_stream_errors():

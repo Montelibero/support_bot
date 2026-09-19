@@ -91,8 +91,18 @@ class DeliveryQueue:
         self._worker_handlers = [consume_new, consume_recovered]
 
     async def start(self) -> None:
+        await self._cleanup_delivered_jobs()
         await self.broker.start()
         self._reconcile_task = asyncio.create_task(self._reconcile_loop())
+
+    async def _cleanup_delivered_jobs(self) -> None:
+        """Startup housekeeping: rows delivered by a previous run may still
+        linger (versions before delete-on-success kept them forever). SQLite
+        reuses the freed pages, no VACUUM needed."""
+        async with self.session_factory() as session:
+            deleted = await DeliveryRepo(session).delete_all_succeeded()
+        if deleted:
+            logger.info("startup cleanup: removed {} delivered jobs", deleted)
 
     async def stop(self) -> None:
         if self._reconcile_task is not None:

@@ -214,6 +214,13 @@ class DeliveryRepo:
         await self.session.commit()
         return bool(result.rowcount)
 
+    async def delete_all_succeeded(self) -> int:
+        result = await self.session.execute(
+            delete(DeliveryJob).where(DeliveryJob.status == "succeeded")
+        )
+        await self.session.commit()
+        return result.rowcount
+
     async def mark_failed(self, job_id: int, *, lease_token: str, error: str) -> bool:
         result = await self.session.execute(
             update(DeliveryJob)
