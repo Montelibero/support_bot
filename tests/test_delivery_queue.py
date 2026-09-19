@@ -2,6 +2,7 @@ import asyncio
 import pytest
 import importlib.util
 from unittest.mock import AsyncMock, MagicMock, patch
+from aiogram import types
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
 from faststream import AckPolicy
@@ -234,12 +235,14 @@ async def test_cmd_resend_does_not_call_get_me_for_logging():
 
 @pytest.mark.asyncio
 async def test_enqueue_resend_persists_serialized_outbound_delivery():
-    message = MagicMock()
-    message.chat.id = 20
-    message.message_id = 30
-    message.photo = None
-    message.media_group_id = None
-    message.model_dump.return_value = {"message_id": 30, "chat": {"id": 20}}
+    message = types.Message.model_validate(
+        {
+            "message_id": 30,
+            "date": 1_700_000_000,
+            "chat": {"id": 20, "type": "private"},
+            "text": "source",
+        }
+    )
     queue = AsyncMock()
 
     await supports.enqueue_resend_message_plus(
@@ -262,7 +265,12 @@ async def test_enqueue_resend_persists_serialized_outbound_delivery():
         payload={
             "operation": "resend_message_plus",
             "bot_id": 10,
-            "message": {"message_id": 30, "chat": {"id": 20}},
+            "message": {
+                "message_id": 30,
+                "date": 1_700_000_000,
+                "chat": {"id": 20, "type": "private"},
+                "text": "source",
+            },
             "chat_id": 40,
             "text": "hello",
             "reply_to_message_id": None,

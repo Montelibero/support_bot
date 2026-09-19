@@ -1,3 +1,4 @@
+import json
 import os
 from html import escape
 from asyncio import sleep
@@ -18,6 +19,7 @@ from aiogram.types import (
     MediaUnion,
 )
 from loguru import logger
+from pydantic_core import to_json
 
 from config.bot_config import SupportBotSettings, BotConfig
 from database.repositories import Repo
@@ -668,6 +670,13 @@ async def cmd_edit_msg(
         )
 
 
+def _serialize_message_payload(message: types.Message) -> dict:
+    """aiogram fills optional fields Telegram did not send (e.g.
+    LinkPreviewOptions on incoming messages) with Default sentinels that
+    model_dump cannot serialize; the fallback nullifies exactly those."""
+    return json.loads(to_json(message, exclude_none=True, fallback=lambda obj: None))
+
+
 async def enqueue_resend_message_plus(
     *,
     delivery_queue: DeliveryQueue,
@@ -688,7 +697,7 @@ async def enqueue_resend_message_plus(
     payload = {
         "operation": "resend_message_plus",
         "bot_id": bot_id,
-        "message": message.model_dump(mode="json", exclude_none=True),
+        "message": _serialize_message_payload(message),
         "chat_id": chat_id,
         "text": text,
         "reply_to_message_id": reply_to_message_id,
