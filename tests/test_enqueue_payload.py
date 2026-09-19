@@ -1,9 +1,9 @@
-"""Regression: delivery-queue enqueue serialization must survive real messages.
+"""Regression: delivery-queue enqueue payloads stay lean and JSON-safe.
 
-aiogram fills optional fields Telegram did not send (e.g. LinkPreviewOptions
-on incoming messages) with Default sentinels; Message.model_dump raises
-PydanticSerializationError on them, which killed every reply and user forward
-in webhook mode where the delivery queue is active.
+The queue persists only the explicit content contract (ids + media
+references), never the whole aiogram Message — whole-message dumps once
+raised PydanticSerializationError on aiogram's Default sentinels inside
+LinkPreviewOptions and killed every reply in webhook mode.
 """
 
 import datetime
@@ -15,67 +15,74 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 
-from bot.routers.supports import _serialize_message_payload, router as support_router
+from bot.routers.supports import _delivery_content, router as support_router
 from tests.conftest import MOCK_SERVER_URL, TEST_BOT_TOKEN
 
 
-def _user_message_update() -> types.Update:
-    # Real-shape Telegram update: link_preview_options present, the optional
-    # fields inside it not sent — aiogram fills them with Default sentinels.
-    return types.Update(
-        update_id=1,
-        message=types.Message.model_validate(
-            {
-                "message_id": 777,
-                "from": {
-                    "id": 777,
-                    "is_bot": False,
-                    "first_name": "User",
-                    "username": "user",
-                },
-                "chat": {"id": 777, "type": "private"},
-                "date": int(datetime.datetime.now().timestamp()),
-                "text": "привет https://example.com",
-                "link_preview_options": {
-                    "url": "https://example.com",
-                    "prefer_large_media": True,
-                },
-            }
-        ),
+def _text_message() -> types.Message:
+    return types.Message.model_validate(
+        {
+            "message_id": 777,
+            "from": {
+                "id": 777,
+                "is_bot": False,
+                "first_name": "User",
+                "username": "user",
+            },
+            "chat": {"id": 777, "type": "private"},
+            "date": int(datetime.datetime.now().timestamp()),
+            "text": "привет https://example.com",
+            "link_preview_options": {
+                "url": "https://example.com",
+                "prefer_large_media": True,
+            },
+        }
     )
 
 
-def test_serialize_message_payload_neutralizes_default_sentinels():
-    message = _user_message_update().message
+def test_delivery_content_keeps_only_ids_and_media_references():
+    content = _delivery_content(_text_message())
 
-    payload = _serialize_message_payload(message)
+    assert content["message_id"] == 777
+    assert content["chat_id"] == 777
+    assert content["photo_file_id"] is None
+    assert content["document_file_id"] is None
+    assert content["location"] is None
+    assert content["contact"] is None
+    assert content["venue"] is None
+    # the contract must not carry the message text or sender objects
+    assert "text" not in content
+    assert "from_user" not in content
+    assert "link_preview_options" not in content
 
-    json.dumps(payload)  # payload must be plain JSON
-    assert payload["link_preview_options"]["url"] == "https://example.com"
-    assert payload["link_preview_options"]["is_disabled"] is None
-    restored = types.Message.model_validate(payload)
-    assert restored.text == "привет https://example.com"
 
-
-def test_serialize_message_payload_keeps_forward_origin_discriminator():
+def test_delivery_content_extracts_media_and_geo_fields():
     message = types.Message.model_validate(
         {
             "message_id": 900,
             "from": {"id": 42, "is_bot": False, "first_name": "User"},
             "chat": {"id": 42, "type": "private"},
             "date": 1700000000,
-            "forward_origin": {
-                "type": "user",
-                "date": 1699990000,
-                "sender_user": {"id": 7, "is_bot": False, "first_name": "Fwd"},
-            },
-            "text": "пересылка",
+            "photo": [
+                {"file_id": "small", "file_unique_id": "s", "width": 90, "height": 90},
+                {
+                    "file_id": "big",
+                    "file_unique_id": "b",
+                    "width": 1280,
+                    "height": 960,
+                },
+            ],
+            "media_group_id": "12345",
+            "location": {"latitude": 25.2, "longitude": 55.3},
         }
     )
 
-    payload = _serialize_message_payload(message)
+    content = _delivery_content(message)
 
-    assert payload["forward_origin"]["type"] == "user"
+    assert content["photo_file_id"] == "big"  # largest size, like the old path
+    assert content["media_group_id"] == "12345"
+    assert content["location"] == {"latitude": 25.2, "longitude": 55.3}
+    json.dumps(content)
 
 
 @pytest.mark.asyncio
@@ -117,10 +124,14 @@ async def test_user_message_with_link_preview_reaches_delivery_queue(mock_server
     queue = MagicMock()
     queue.enqueue = AsyncMock(return_value=None)
 
-    await dp.feed_update(bot=bot, update=_user_message_update(), delivery_queue=queue)
+    update = types.Update(update_id=1, message=_text_message())
+    await dp.feed_update(bot=bot, update=update, delivery_queue=queue)
 
     queue.enqueue.assert_awaited_once()
     payload = queue.enqueue.await_args.kwargs["payload"]
-    assert payload["message"]["link_preview_options"]["url"] == "https://example.com"
-    types.Message.model_validate(payload["message"])  # worker round-trip
+    assert payload["payload_version"] == 2
+    assert payload["content"]["message_id"] == 777
+    serialized = json.dumps(payload)
+    assert "link_preview_options" not in serialized
+    assert "from_user" not in serialized
     await bot.session.close()

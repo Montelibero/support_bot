@@ -1,4 +1,3 @@
-import json
 import os
 from html import escape
 from asyncio import sleep
@@ -19,7 +18,6 @@ from aiogram.types import (
     MediaUnion,
 )
 from loguru import logger
-from pydantic_core import to_json
 
 from config.bot_config import SupportBotSettings, BotConfig
 from database.repositories import Repo
@@ -325,7 +323,7 @@ async def cmd_send(
                     try:
                         i += 1
                         await resend_message_plus(
-                            message=message,
+                            content=_delivery_content(message),
                             bot=bot,
                             repo=repo,
                             chat_id=chat_id,
@@ -494,7 +492,7 @@ async def cmd_resend(
                 )
                 return
             resend_kwargs = {
-                "message": message,
+                "content": _delivery_content(message),
                 "chat_id": resend_info.chat_from_id,
                 "text": f"{message.html_text}\n\nВам ответил {agent_name}",
                 "reply_to_message_id": resend_info.message_id,
@@ -558,7 +556,7 @@ async def cmd_resend(
             text += "\n\n отправлен автоответ 🤖"
 
         resend_kwargs = {
-            "message": message,
+            "content": _delivery_content(message),
             "chat_id": master_chat,
             "text": text,
             "reply_to_message_id": reply_to_message_id,
@@ -658,7 +656,7 @@ async def cmd_edit_msg(
             return
 
         await resend_message_plus(
-            message=message,
+            content=_delivery_content(message),
             bot=bot,
             repo=repo,
             chat_id=master_chat,
@@ -670,17 +668,60 @@ async def cmd_edit_msg(
         )
 
 
-def _serialize_message_payload(message: types.Message) -> dict:
-    """aiogram fills optional fields Telegram did not send (e.g.
-    LinkPreviewOptions on incoming messages) with Default sentinels that
-    model_dump cannot serialize; the fallback nullifies exactly those."""
-    return json.loads(to_json(message, exclude_none=True, fallback=lambda obj: None))
+def _delivery_content(message: types.Message) -> dict:
+    """Minimal fields the delivery worker needs: ids and media references.
+
+    Whole-message serialization is intentionally avoided — the queue payload
+    must not depend on aiogram's object graph or its serialization quirks.
+    """
+    return {
+        "message_id": message.message_id,
+        "chat_id": message.chat.id,
+        "media_group_id": message.media_group_id,
+        "photo_file_id": message.photo[-1].file_id if message.photo else None,
+        "document_file_id": message.document.file_id if message.document else None,
+        "sticker_file_id": message.sticker.file_id if message.sticker else None,
+        "audio_file_id": message.audio.file_id if message.audio else None,
+        "video_file_id": message.video.file_id if message.video else None,
+        "voice_file_id": message.voice.file_id if message.voice else None,
+        "video_note_file_id": (
+            message.video_note.file_id if message.video_note else None
+        ),
+        "animation_file_id": (message.animation.file_id if message.animation else None),
+        "location": (
+            {
+                "latitude": message.location.latitude,
+                "longitude": message.location.longitude,
+            }
+            if message.location
+            else None
+        ),
+        "contact": (
+            {
+                "phone_number": message.contact.phone_number,
+                "first_name": message.contact.first_name,
+                "last_name": message.contact.last_name,
+            }
+            if message.contact
+            else None
+        ),
+        "venue": (
+            {
+                "latitude": message.venue.location.latitude,
+                "longitude": message.venue.location.longitude,
+                "title": message.venue.title,
+                "address": message.venue.address,
+            }
+            if message.venue
+            else None
+        ),
+    }
 
 
 async def enqueue_resend_message_plus(
     *,
     delivery_queue: DeliveryQueue,
-    message: types.Message,
+    content: dict,
     bot_id: int,
     chat_id: int,
     text: str,
@@ -696,8 +737,9 @@ async def enqueue_resend_message_plus(
     )
     payload = {
         "operation": "resend_message_plus",
+        "payload_version": 2,
         "bot_id": bot_id,
-        "message": _serialize_message_payload(message),
+        "content": content,
         "chat_id": chat_id,
         "text": text,
         "reply_to_message_id": reply_to_message_id,
@@ -705,27 +747,51 @@ async def enqueue_resend_message_plus(
         "message_thread_id": message_thread_id,
         "reply_markup": serialized_markup,
     }
-    if message.photo and message.media_group_id:
+    if content["photo_file_id"] and content["media_group_id"]:
         await delivery_queue.enqueue_album_item(
             bot_id=bot_id,
-            source_chat_id=message.chat.id,
-            media_group_id=message.media_group_id,
+            source_chat_id=content["chat_id"],
+            media_group_id=content["media_group_id"],
             delivery_kind=f"resend_album:{chat_id}",
             payload={
                 **payload,
                 "operation": "resend_media_group",
-                "media_group_id": message.media_group_id,
-                "messages": [payload.pop("message")],
+                "media_group_id": content["media_group_id"],
+                "messages": [payload.pop("content")],
             },
         )
         return
     await delivery_queue.enqueue(
         bot_id=bot_id,
-        source_chat_id=message.chat.id,
-        source_message_id=message.message_id,
+        source_chat_id=content["chat_id"],
+        source_message_id=content["message_id"],
         delivery_kind=f"resend:{chat_id}",
         payload=payload,
     )
+
+
+def _item_content(item: dict, bot: Bot) -> dict:
+    """Convert one queued message entry to the content contract; entries
+    already in contract shape (mixed album aggregates) pass through."""
+    if "chat_id" in item:
+        return item
+    return _delivery_content(types.Message.model_validate(item, context={"bot": bot}))
+
+
+def _legacy_delivery_payload(payload: dict, bot: Bot) -> dict:
+    """Normalize pre-contract payloads (whole-message dumps under the
+    `message`/`messages` keys) so the worker keeps a single delivery path."""
+    normalized = dict(payload)
+    if "message" in payload:
+        normalized["content"] = _item_content(payload["message"], bot)
+    if "content" in payload:
+        normalized["content"] = _item_content(payload["content"], bot)
+    if "messages" in payload:
+        normalized["messages"] = [
+            _item_content(item, bot) for item in payload["messages"]
+        ]
+    normalized["payload_version"] = 2
+    return normalized
 
 
 async def execute_delivery_payload(
@@ -735,15 +801,14 @@ async def execute_delivery_payload(
     config: BotConfig,
 ) -> list[int]:
     operation = payload.get("operation")
+    if payload.get("payload_version") != 2:
+        payload = _legacy_delivery_payload(payload, bot)
     if operation == "resend_media_group":
-        messages = [
-            types.Message.model_validate(item, context={"bot": bot})
-            for item in payload["messages"]
-        ]
+        contents = payload["messages"]
         media: list[MediaUnion] = [
-            types.InputMediaPhoto(media=message.photo[-1].file_id)
-            for message in messages
-            if message.photo
+            types.InputMediaPhoto(media=item["photo_file_id"])
+            for item in contents
+            if item["photo_file_id"]
         ]
         try:
             sent_album = await bot.send_media_group(
@@ -765,14 +830,14 @@ async def execute_delivery_payload(
                 {**payload, "reply_to_message_id": None}, bot, repo, config
             )
         result_ids: list[int] = []
-        for source, sent in zip(messages, sent_album, strict=True):
+        for item, sent in zip(contents, sent_album, strict=True):
             result_ids.append(sent.message_id)
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=payload.get("support_user_id"),
-                message_id=source.message_id,
+                message_id=item["message_id"],
                 resend_id=sent.message_id,
-                chat_from_id=source.chat.id,
+                chat_from_id=item["chat_id"],
                 chat_for_id=sent.chat.id,
             )
         sent_text = await bot.send_message(
@@ -787,19 +852,18 @@ async def execute_delivery_payload(
             ),
         )
         result_ids.append(sent_text.message_id)
-        first = messages[0]
+        first = contents[0]
         await repo.save_message_ids(
             bot_id=bot.id,
             user_id=payload.get("support_user_id"),
-            message_id=first.message_id,
+            message_id=first["message_id"],
             resend_id=sent_text.message_id,
-            chat_from_id=first.chat.id,
+            chat_from_id=first["chat_id"],
             chat_for_id=sent_text.chat.id,
         )
         return result_ids
     if operation != "resend_message_plus":
         raise ValueError(f"Unsupported delivery operation: {payload.get('operation')}")
-    message = types.Message.model_validate(payload["message"], context={"bot": bot})
     reply_markup_data = payload.get("reply_markup")
     reply_markup = (
         types.InlineKeyboardMarkup.model_validate(reply_markup_data)
@@ -807,7 +871,7 @@ async def execute_delivery_payload(
         else None
     )
     result = await resend_message_plus(
-        message=message,
+        content=payload["content"],
         bot=bot,
         repo=repo,
         chat_id=payload["chat_id"],
@@ -823,7 +887,7 @@ async def execute_delivery_payload(
 
 
 async def resend_message_plus(
-    message: types.Message,
+    content: dict,
     bot: Bot,
     repo: Repo,
     chat_id: int,
@@ -836,19 +900,21 @@ async def resend_message_plus(
     reply_markup: types.InlineKeyboardMarkup | None = None,
 ):
     try:
-        if message.photo:
-            if message.media_group_id:
-                if message.media_group_id in config.media_groups:
-                    config.media_groups[message.media_group_id].append(
-                        message.photo[-1].file_id
+        if content["photo_file_id"]:
+            # enqueue_album_item strips media_group_id from continuation
+            # jobs, so access it tolerantly
+            if content.get("media_group_id"):
+                if content["media_group_id"] in config.media_groups:
+                    config.media_groups[content["media_group_id"]].append(
+                        content["photo_file_id"]
                     )
                     return
-                config.media_groups[message.media_group_id] = [
-                    message.photo[-1].file_id
+                config.media_groups[content["media_group_id"]] = [
+                    content["photo_file_id"]
                 ]
                 await sleep(7)
 
-                album_file_ids = config.media_groups.pop(message.media_group_id, [])
+                album_file_ids = config.media_groups.pop(content["media_group_id"], [])
                 new_album: list[MediaUnion] = [
                     types.InputMediaPhoto(media=file_id) for file_id in album_file_ids
                 ]
@@ -862,185 +928,185 @@ async def resend_message_plus(
                     await repo.save_message_ids(
                         bot_id=bot.id,
                         user_id=support_user_id,
-                        message_id=message.message_id,
+                        message_id=content["message_id"],
                         resend_id=resend_message.message_id,
-                        chat_from_id=message.chat.id,
+                        chat_from_id=content["chat_id"],
                         chat_for_id=resend_message.chat.id,
                     )
             else:
                 resend_message = await bot.send_photo(
                     chat_id=chat_id,
                     message_thread_id=message_thread_id,
-                    photo=message.photo[-1].file_id,
+                    photo=content["photo_file_id"],
                     reply_to_message_id=reply_to_message_id,
                 )
                 await repo.save_message_ids(
                     bot_id=bot.id,
                     user_id=support_user_id,
-                    message_id=message.message_id,
+                    message_id=content["message_id"],
                     resend_id=resend_message.message_id,
-                    chat_from_id=message.chat.id,
+                    chat_from_id=content["chat_id"],
                     chat_for_id=resend_message.chat.id,
                 )
 
-        if message.document:
+        if content["document_file_id"]:
             resend_message = await bot.send_document(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                document=message.document.file_id,
+                document=content["document_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
-        if message.sticker:
+        if content["sticker_file_id"]:
             resend_message = await bot.send_sticker(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                sticker=message.sticker.file_id,
+                sticker=content["sticker_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
-        if message.audio:
+        if content["audio_file_id"]:
             resend_message = await bot.send_audio(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                audio=message.audio.file_id,
+                audio=content["audio_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
-        if message.video:
+        if content["video_file_id"]:
             resend_message = await bot.send_video(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                video=message.video.file_id,
+                video=content["video_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
-        if message.voice:
+        if content["voice_file_id"]:
             resend_message = await bot.send_voice(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                voice=message.voice.file_id,
+                voice=content["voice_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
 
-        if message.video_note:
+        if content["video_note_file_id"]:
             resend_message = await bot.send_video_note(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                video_note=message.video_note.file_id,
+                video_note=content["video_note_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
 
-        if message.animation:
+        if content["animation_file_id"]:
             resend_message = await bot.send_animation(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                animation=message.animation.file_id,
+                animation=content["animation_file_id"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
 
-        if message.location:
+        if content["location"]:
             resend_message = await bot.send_location(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                latitude=message.location.latitude,
-                longitude=message.location.longitude,
+                latitude=content["location"]["latitude"],
+                longitude=content["location"]["longitude"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
 
-        if message.contact:
+        if content["contact"]:
             resend_message = await bot.send_contact(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                phone_number=message.contact.phone_number,
-                first_name=message.contact.first_name,
-                last_name=message.contact.last_name,
+                phone_number=content["contact"]["phone_number"],
+                first_name=content["contact"]["first_name"],
+                last_name=content["contact"]["last_name"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
-        if message.venue:
+        if content["venue"]:
             resend_message = await bot.send_venue(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                latitude=message.venue.location.latitude,
-                longitude=message.venue.location.longitude,
-                title=message.venue.title,
-                address=message.venue.address,
+                latitude=content["venue"]["latitude"],
+                longitude=content["venue"]["longitude"],
+                title=content["venue"]["title"],
+                address=content["venue"]["address"],
                 reply_to_message_id=reply_to_message_id,
             )
             await repo.save_message_ids(
                 bot_id=bot.id,
                 user_id=support_user_id,
-                message_id=message.message_id,
+                message_id=content["message_id"],
                 resend_id=resend_message.message_id,
-                chat_from_id=message.chat.id,
+                chat_from_id=content["chat_id"],
                 chat_for_id=resend_message.chat.id,
             )
 
@@ -1054,9 +1120,9 @@ async def resend_message_plus(
         await repo.save_message_ids(
             bot_id=bot.id,
             user_id=support_user_id,
-            message_id=message.message_id,
+            message_id=content["message_id"],
             resend_id=resend_message.message_id,
-            chat_from_id=message.chat.id,
+            chat_from_id=content["chat_id"],
             chat_for_id=resend_message.chat.id,
         )
 
@@ -1071,7 +1137,7 @@ async def resend_message_plus(
             )
             if reply_to_message_id is not None:
                 await resend_message_plus(
-                    message=message,
+                    content=content,
                     bot=bot,
                     repo=repo,
                     chat_id=chat_id,
@@ -1086,35 +1152,35 @@ async def resend_message_plus(
                 return
         logger.error(
             f"resend_message_plus TelegramBadRequest — bot_id={bot.id}, "
-            f"src_chat_id={message.chat.id}, dst_chat_id={chat_id}, "
-            f"message_id={message.message_id}: {ex}"
+            f"src_chat_id={content['chat_id']}, dst_chat_id={chat_id}, "
+            f"message_id={content['message_id']}: {ex}"
         )
         if do_exception:
             raise
         current_settings = config.get_bot_setting(bot.id)
         if (
             current_settings is not None
-            and message.chat.id == current_settings.master_chat
+            and content["chat_id"] == current_settings.master_chat
         ):
-            await message.answer(f"Ошибка отправки\n{ex}")
+            await bot.send_message(content["chat_id"], f"Ошибка отправки\n{ex}")
         else:
-            await message.answer("Send error =(")
+            await bot.send_message(content["chat_id"], "Send error =(")
 
     except Exception as ex:
         logger.error(
-            f"resend_message_plus failed — bot_id={bot.id}, src_chat_id={message.chat.id}, "
-            f"dst_chat_id={chat_id}, message_id={message.message_id}: {ex}"
+            f"resend_message_plus failed — bot_id={bot.id}, src_chat_id={content['chat_id']}, "
+            f"dst_chat_id={chat_id}, message_id={content['message_id']}: {ex}"
         )
         if do_exception:
             raise
         current_settings = config.get_bot_setting(bot.id)
         if (
             current_settings is not None
-            and message.chat.id == current_settings.master_chat
+            and content["chat_id"] == current_settings.master_chat
         ):
-            await message.answer(f"Ошибка отправки\n{ex}")
+            await bot.send_message(content["chat_id"], f"Ошибка отправки\n{ex}")
         else:
-            await message.answer("Send error =(")
+            await bot.send_message(content["chat_id"], "Send error =(")
 
 
 @router.message_reaction()

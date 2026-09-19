@@ -187,7 +187,7 @@ class DeliveryQueue:
             continuation_payload = {
                 **payload,
                 "operation": "resend_message_plus",
-                "message": continuation_message,
+                "content": continuation_message,
             }
             continuation_payload.pop("messages", None)
             return await self.enqueue(
@@ -221,7 +221,7 @@ class DeliveryQueue:
                 raise RuntimeError(f"delivery job {job.job_id} claimed without lease")
             lease_token = job.lease_token
             try:
-                result_message_ids = await deliver(job.payload)
+                await deliver(job.payload)
             except (
                 TelegramBadRequest,
                 TelegramForbiddenError,
@@ -275,11 +275,7 @@ class DeliveryQueue:
                     )
                 return False
 
-            updated = await repo.mark_succeeded(
-                job.job_id,
-                lease_token=lease_token,
-                result_message_ids=result_message_ids,
-            )
+            updated = await repo.delete_succeeded(job.job_id, lease_token=lease_token)
             if not updated:
                 logger.warning(
                     "delivery result ignored after lease was superseded — job_id={}, attempt={}",
@@ -289,7 +285,7 @@ class DeliveryQueue:
                 return False
             self._forget_album_lock(job)
             logger.info(
-                "delivery job succeeded — job_id={}, attempt={}",
+                "delivery job delivered — job_id={}, attempt={}",
                 job.job_id,
                 job.attempt_count,
             )

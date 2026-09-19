@@ -61,7 +61,7 @@ async def test_enqueue_remains_pending_when_redis_publish_fails(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_process_marks_successful_delivery(tmp_path):
+async def test_process_deletes_job_after_successful_delivery(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.db'}")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
@@ -85,9 +85,7 @@ async def test_process_marks_successful_delivery(tmp_path):
 
     assert processed is True
     deliver.assert_awaited_once_with({"text": "deliver me"})
-    assert saved is not None
-    assert saved.status == "succeeded"
-    assert saved.result_message_ids == [1002]
+    assert saved is None
 
 
 @pytest.mark.asyncio
@@ -247,7 +245,7 @@ async def test_enqueue_resend_persists_serialized_outbound_delivery():
 
     await supports.enqueue_resend_message_plus(
         delivery_queue=queue,
-        message=message,
+        content=supports._delivery_content(message),
         bot_id=10,
         chat_id=40,
         text="hello",
@@ -264,12 +262,23 @@ async def test_enqueue_resend_persists_serialized_outbound_delivery():
         delivery_kind="resend:40",
         payload={
             "operation": "resend_message_plus",
+            "payload_version": 2,
             "bot_id": 10,
-            "message": {
+            "content": {
                 "message_id": 30,
-                "date": 1_700_000_000,
-                "chat": {"id": 20, "type": "private"},
-                "text": "source",
+                "chat_id": 20,
+                "media_group_id": None,
+                "photo_file_id": None,
+                "document_file_id": None,
+                "sticker_file_id": None,
+                "audio_file_id": None,
+                "video_file_id": None,
+                "voice_file_id": None,
+                "video_note_file_id": None,
+                "animation_file_id": None,
+                "location": None,
+                "contact": None,
+                "venue": None,
             },
             "chat_id": 40,
             "text": "hello",
@@ -282,7 +291,7 @@ async def test_enqueue_resend_persists_serialized_outbound_delivery():
 
 
 @pytest.mark.asyncio
-async def test_execute_delivery_payload_reconstructs_message_and_sends():
+async def test_execute_delivery_payload_still_delivers_legacy_payloads():
     bot = MagicMock()
     repo = MagicMock()
     config = MagicMock()
@@ -311,9 +320,69 @@ async def test_execute_delivery_payload_reconstructs_message_and_sends():
     assert result == [1003]
     assert resend.await_args is not None
     call = resend.await_args.kwargs
-    assert call["message"].message_id == 30
+    assert call["content"]["message_id"] == 30
+    assert call["content"]["chat_id"] == 20
     assert call["chat_id"] == 40
     assert call["do_exception"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_delivery_payload_sends_contract_payload_directly():
+    from types import SimpleNamespace
+
+    bot = AsyncMock()
+    bot.id = 10
+    bot.send_message.return_value = SimpleNamespace(
+        message_id=1003, chat=SimpleNamespace(id=40)
+    )
+    repo = AsyncMock()
+    config = MagicMock()
+    payload = {
+        "operation": "resend_message_plus",
+        "payload_version": 2,
+        "bot_id": 10,
+        "content": {
+            "message_id": 30,
+            "chat_id": 20,
+            "media_group_id": None,
+            "photo_file_id": None,
+            "document_file_id": None,
+            "sticker_file_id": None,
+            "audio_file_id": None,
+            "video_file_id": None,
+            "voice_file_id": None,
+            "video_note_file_id": None,
+            "animation_file_id": None,
+            "location": None,
+            "contact": None,
+            "venue": None,
+        },
+        "chat_id": 40,
+        "text": "hello",
+        "reply_to_message_id": None,
+        "support_user_id": 50,
+        "message_thread_id": None,
+        "reply_markup": None,
+    }
+
+    result = await supports.execute_delivery_payload(payload, bot, repo, config)
+
+    assert result == []
+    bot.send_message.assert_awaited_once_with(
+        chat_id=40,
+        text="hello",
+        message_thread_id=None,
+        reply_to_message_id=None,
+        reply_markup=None,
+    )
+    repo.save_message_ids.assert_awaited_once_with(
+        bot_id=10,
+        user_id=50,
+        message_id=30,
+        resend_id=1003,
+        chat_from_id=20,
+        chat_for_id=40,
+    )
 
 
 @pytest.mark.asyncio
@@ -468,10 +537,9 @@ async def test_delivery_job_retry_and_success_transitions(tmp_path):
         claimed_again = await repo.claim(job.job_id, now=now + timedelta(minutes=2))
         assert claimed_again is not None
         assert claimed_again.lease_token is not None
-        await repo.mark_succeeded(
+        deleted = await repo.delete_succeeded(
             job.job_id,
             lease_token=claimed_again.lease_token,
-            result_message_ids=[1001],
         )
         succeeded = await repo.get(job.job_id)
 
@@ -484,9 +552,8 @@ async def test_delivery_job_retry_and_success_transitions(tmp_path):
     assert [item.job_id for item in due] == [job.job_id]
     assert claimed_again is not None
     assert claimed_again.attempt_count == 2
-    assert succeeded is not None
-    assert succeeded.status == "succeeded"
-    assert succeeded.result_message_ids == [1001]
+    assert deleted is True
+    assert succeeded is None
 
 
 @pytest.mark.asyncio
@@ -549,10 +616,9 @@ async def test_stale_worker_cannot_overwrite_reclaimed_job(tmp_path):
             error="late timeout",
             next_attempt_at=now + timedelta(minutes=3),
         )
-        current_update = await repo.mark_succeeded(
+        current_update = await repo.delete_succeeded(
             job.job_id,
             lease_token=second.lease_token,
-            result_message_ids=[2001],
         )
         saved = await repo.get(job.job_id)
 
@@ -560,8 +626,7 @@ async def test_stale_worker_cannot_overwrite_reclaimed_job(tmp_path):
 
     assert stale_update is False
     assert current_update is True
-    assert saved is not None
-    assert saved.status == "succeeded"
+    assert saved is None
 
 
 @pytest.mark.asyncio
@@ -705,20 +770,24 @@ async def test_late_album_item_becomes_durable_continuation_job(tmp_path):
         payload={
             **base,
             "messages": [
-                {
-                    "message_id": 202,
-                    "date": 1_700_000_000,
-                    "chat": {"id": 20, "type": "private"},
-                    "media_group_id": "9002",
-                    "photo": [
+                supports._delivery_content(
+                    types.Message.model_validate(
                         {
-                            "file_id": "late",
-                            "file_unique_id": "u-late",
-                            "width": 1,
-                            "height": 1,
+                            "message_id": 202,
+                            "date": 1_700_000_000,
+                            "chat": {"id": 20, "type": "private"},
+                            "media_group_id": "9002",
+                            "photo": [
+                                {
+                                    "file_id": "late",
+                                    "file_unique_id": "u-late",
+                                    "width": 1,
+                                    "height": 1,
+                                }
+                            ],
                         }
-                    ],
-                }
+                    )
+                )
             ],
         },
     )
@@ -728,8 +797,8 @@ async def test_late_album_item_becomes_durable_continuation_job(tmp_path):
 
     assert continuation.job_id != aggregate.job_id
     assert continuation.payload["operation"] == "resend_message_plus"
-    assert continuation.payload["message"]["message_id"] == 202
-    assert "media_group_id" not in continuation.payload["message"]
+    assert continuation.payload["content"]["message_id"] == 202
+    assert "media_group_id" not in continuation.payload["content"]
     assert count == 2
 
     bot = AsyncMock()

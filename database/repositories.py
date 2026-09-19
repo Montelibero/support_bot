@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import DeliveryJob, Messages, Users
@@ -203,28 +203,16 @@ class DeliveryRepo:
         await self.session.commit()
         return result.scalar_one_or_none() is not None
 
-    async def mark_succeeded(
-        self, job_id: int, *, lease_token: str, result_message_ids: list[int]
-    ) -> bool:
+    async def delete_succeeded(self, job_id: int, *, lease_token: str) -> bool:
         result = await self.session.execute(
-            update(DeliveryJob)
-            .where(
+            delete(DeliveryJob).where(
                 DeliveryJob.job_id == job_id,
                 DeliveryJob.status == "processing",
                 DeliveryJob.lease_token == lease_token,
             )
-            .values(
-                status="succeeded",
-                result_message_ids=result_message_ids,
-                last_error=None,
-                next_attempt_at=None,
-                lease_token=None,
-                updated_at=datetime.now(),
-            )
-            .returning(DeliveryJob.job_id)
         )
         await self.session.commit()
-        return result.scalar_one_or_none() is not None
+        return bool(result.rowcount)
 
     async def mark_failed(self, job_id: int, *, lease_token: str, error: str) -> bool:
         result = await self.session.execute(
