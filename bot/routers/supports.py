@@ -644,6 +644,12 @@ async def cmd_edit_msg(
                     await message.reply(f"Не получилось изменить сообщение =(\n{ex}")
 
     else:
+        # Non-support chats (arbitrary groups the bot sits in) must stay
+        # silent: Telegram sends edited_message on reactions too, and there
+        # is nothing to edit in chats the bot cannot send to.
+        if message.chat.type != "private":
+            return
+
         user = _require_from_user(message)
         master_chat = _require_master_chat(bot_settings)
         send_info = await repo.get_message_resend_info(
