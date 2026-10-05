@@ -483,7 +483,7 @@ class HelperCustomization(AbstractBotCustomization):
             logger.warning(f"helper /tickets failed: {ex}")
             await message.answer(
                 "Не удалось получить список тикетов, редис недоступен",
-                disable_web_page_preview=True,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             )
             return
         # t.me/c/ links exist only for supergroup/channel ids (-100...);
@@ -530,7 +530,10 @@ class HelperCustomization(AbstractBotCustomization):
         if current:
             chunks.append(current)
         if not chunks:
-            await message.answer("Открытых тикетов нет", disable_web_page_preview=True)
+            await message.answer(
+                "Открытых тикетов нет",
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+            )
             return
         for index, chunk in enumerate(chunks):
             if index:
@@ -538,7 +541,7 @@ class HelperCustomization(AbstractBotCustomization):
             header = "Открытые тикеты:\n" if index == 0 else ""
             await message.answer(
                 f"{header}{chunk}",
-                disable_web_page_preview=True,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
                 parse_mode="HTML",
             )
 
@@ -559,13 +562,13 @@ class HelperCustomization(AbstractBotCustomization):
             logger.warning(f"helper /ticket_close failed: {ex}")
             await message.answer(
                 "Не удалось закрыть тикет, редис недоступен",
-                disable_web_page_preview=True,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             )
             return
         if found is None:
             await message.answer(
                 f"Открытый тикет с сообщением {ticket_msg_id} не найден",
-                disable_web_page_preview=True,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             )
             return
         key, assignment = found
@@ -583,7 +586,7 @@ class HelperCustomization(AbstractBotCustomization):
         if current is None or current.ticket_msg != ticket_msg_id:
             await message.answer(
                 "Этот тикет уже закрыт или закреплён за другим сообщением",
-                disable_web_page_preview=True,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             )
             return
         try:
@@ -592,13 +595,13 @@ class HelperCustomization(AbstractBotCustomization):
             logger.warning(f"helper /ticket_close delete failed: {ex}")
             await message.answer(
                 "Не удалось закрыть тикет, редис недоступен",
-                disable_web_page_preview=True,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             )
             return
         agent = _format_agent_tag(assignment.agent)
         await message.answer(
             f"Тикет {ticket_msg_id} закрыт (взял {agent})",
-            disable_web_page_preview=True,
+            link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             parse_mode="HTML",
         )
 
