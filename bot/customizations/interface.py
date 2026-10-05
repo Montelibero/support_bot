@@ -25,3 +25,11 @@ class AbstractBotCustomization(ABC):
     ) -> Optional[InlineKeyboardMarkup]:
         """Returns the reply markup (buttons) for the forwarded message."""
         pass
+
+    async def handle_master_message(
+        self, message: Message, bot_settings: SupportBotSettings
+    ) -> bool:
+        """Called by the core for every master-chat message before default
+        handling. Return True when the message is fully handled; the core
+        treats any exception here as "not handled" and keeps working."""
+        return False

@@ -462,6 +462,15 @@ async def cmd_resend(
         f"Bot ID: {bot.id}, Chat ID: {message.chat.id}"
     )
     if message.chat.id == bot_settings.master_chat:
+        customization = get_customization(bot.id)
+        try:
+            if await customization.handle_master_message(message, bot_settings):
+                return
+        except Exception:
+            logger.exception(
+                f"customization master hook failed — bot_id={bot.id}, "
+                "falling back to core handling"
+            )
         reply_message = message.reply_to_message
         reply_user = reply_message.from_user if reply_message is not None else None
         if reply_message and reply_user is not None and reply_user.id == bot.id:
