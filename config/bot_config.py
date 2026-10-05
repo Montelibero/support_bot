@@ -8,7 +8,11 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    LinkPreviewOptions,
+)
 from environs import Env
 from pydantic import BaseModel
 from loguru import logger
@@ -358,7 +362,11 @@ def make_bot(token: str, default: Optional[DefaultBotProperties] = None) -> Bot:
     """Единая точка создания aiogram Bot — подставляет сессию через make_session()."""
     return Bot(
         token=token,
-        default=default or DefaultBotProperties(parse_mode="HTML"),
+        default=default
+        or DefaultBotProperties(
+            parse_mode="HTML",
+            link_preview=LinkPreviewOptions(is_disabled=True),
+        ),
         session=make_session(),
     )
 

@@ -7,6 +7,7 @@ import sentry_sdk
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import LinkPreviewOptions
 from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiogram.fsm.storage.redis import RedisStorage
@@ -228,7 +229,12 @@ def main():
         SimpleRequestHandler(dispatcher=main_dispatcher, bot=bot).register(
             app, path=f"/{bot_config.SECRET_URL}/{bot_config.MAIN_BOT_PATH}"
         )
-        bot_settings = {"default": DefaultBotProperties(parse_mode="HTML")}
+        bot_settings = {
+            "default": DefaultBotProperties(
+                parse_mode="HTML",
+                link_preview=LinkPreviewOptions(is_disabled=True),
+            )
+        }
         support_bots = {
             bot_setting.token: make_bot(bot_setting.token)
             for bot_setting in bot_config.get_bot_settings()
