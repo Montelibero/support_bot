@@ -30,6 +30,52 @@ router.include_router(get_all_routers())
 
 SPAM_BLOCK_REPLY_TEXT = "Ссылки и медиа запрещены / Links and media are not allowed"
 
+CORE_HELP_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/start", "приветственное сообщение"),
+    ("/security_policy", "политика конфиденциальности"),
+    ("/myname имя", "сохранить псевдоним оператора"),
+    ("/show_names", "показать сохранённые псевдонимы"),
+    ("/ignore ID", "добавить/убрать ID из игнора (без ID — показать последние)"),
+    ("/send ID...", "в ответ на сообщение отправить его нескольким пользователям"),
+    ("/stats", "статистика ответов операторов"),
+    ("/link", "привязать текущий чат к боту (только владелец)"),
+    ("/help", "эта справка"),
+)
+
+HELP_CHUNK_LIMIT = 4000
+
+
+def _core_help_text() -> str:
+    lines = ["<b>Команды поддержки</b>"]
+    lines.extend(
+        f"<code>{escape(command)}</code> — {description}"
+        for command, description in CORE_HELP_COMMANDS
+    )
+    return "\n".join(lines)
+
+
+def _split_help_text(text: str, limit: int = HELP_CHUNK_LIMIT) -> list[str]:
+    """Split HTML help on line boundaries, keeping every chunk under the
+    Telegram message limit. A single overlong line is hard-split."""
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
 
 def _require_text(message: types.Message) -> str:
     assert message.text is not None
@@ -170,6 +216,29 @@ class LinkChatCallbackData(CallbackData, prefix="link_chat"):
     new_chat_id: int
     new_thread_id: int | None
     action: str
+
+
+@router.message(Command(commands=["help"]))
+async def cmd_help(message: types.Message, bot: Bot, bot_settings: SupportBotSettings):
+    if message.chat.id != bot_settings.master_chat:
+        # Consume /help outside the attached chat: it must not be forwarded
+        # to support as a regular user ticket.
+        return
+
+    text = _core_help_text()
+    try:
+        extra = await get_customization(bot.id).get_help_text(bot_settings)
+    except Exception:
+        logger.exception(
+            f"help customization hook failed — bot_id={bot.id}, "
+            "falling back to core help"
+        )
+        extra = ""
+    if extra:
+        text = f"{text}{extra}"
+
+    for chunk in _split_help_text(text):
+        await message.answer(chunk)
 
 
 @router.message(Command(commands=["start"]))

@@ -33,3 +33,12 @@ class AbstractBotCustomization(ABC):
         handling. Return True when the message is fully handled; the core
         treats any exception here as "not handled" and keeps working."""
         return False
+
+    async def get_help_text(self, bot_settings: SupportBotSettings) -> str:
+        """Return a valid HTML fragment appended to /help.
+
+        The core owns the header and the base command list; plugins only add
+        their own section. Return an empty string when the plugin has no
+        commands to document.
+        """
+        return ""

@@ -146,7 +146,7 @@ async def _claim_assignment(
     """
     key = _assignment_key(bot_id, user_id)
     payload = json.dumps({"agent": agent_username, "ticket_msg": ticket_msg_id})
-    result = await _get_redis().set(key, payload, nx=True if previous is None else None)
+    result = await _get_redis().set(key, payload, nx=previous is None)
     return bool(result) if previous is None else True
 
 
@@ -596,6 +596,13 @@ class HelperCustomization(AbstractBotCustomization):
         await message.answer(
             f"Тикет {ticket_msg_id} закрыт (взял {agent})",
             parse_mode="HTML",
+        )
+
+    async def get_help_text(self, bot_settings: SupportBotSettings) -> str:
+        return (
+            "\n\n<b>Helper</b>\n"
+            "<code>/tickets</code> — открытые тикеты и их исполнители\n"
+            "<code>/ticket_close_&lt;id&gt;</code> — закрыть тикет по ID сообщения"
         )
 
     async def get_extra_text(
