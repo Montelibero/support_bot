@@ -520,7 +520,8 @@ class HelperCustomization(AbstractBotCustomization):
         chunks: list[str] = []
         current = ""
         for _, line in rows:
-            candidate = f"{current}\n{line}" if current else line
+            # A blank line between tickets keeps the list scannable in Telegram.
+            candidate = f"{current}\n\n{line}" if current else line
             if len(candidate) > 4000 and current:
                 chunks.append(current)
                 current = line

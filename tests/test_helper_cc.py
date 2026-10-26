@@ -253,6 +253,26 @@ async def test_tickets_sorted_oldest_first(customization, fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_tickets_blank_line_between_assignments(customization, fake_redis):
+    bot = _make_bot()
+    fake_redis.store[f"helper:assign:{bot.id}:777"] = json.dumps(
+        {"agent": "agent1", "ticket_msg": 556}
+    )
+    fake_redis.store[f"helper:assign:{bot.id}:778"] = json.dumps(
+        {"agent": "agent2", "ticket_msg": 100}
+    )
+    message = _make_message_mock(text="/tickets", bot=bot)
+
+    await customization.cmd_tickets(message, _make_settings())
+
+    lines = message.answer.await_args.args[0].splitlines()
+    first = next(i for i, line in enumerate(lines) if "ticket_close_100" in line)
+    second = next(i for i, line in enumerate(lines) if "ticket_close_556" in line)
+    assert second == first + 2
+    assert lines[first + 1] == ""
+
+
+@pytest.mark.asyncio
 async def test_tickets_empty_state(customization, fake_redis):
     message = _make_message_mock(text="/tickets")
 
