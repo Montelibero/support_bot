@@ -60,3 +60,6 @@ Thumbs.db
 # Codespaces belief map
 .belief_map.sexp
 .belief_map_cache.json
+
+# Local AI-tool ignore file
+/.zcodeignore
