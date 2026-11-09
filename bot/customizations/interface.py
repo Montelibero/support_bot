@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+from aiogram import Bot, Router
 from aiogram.types import InlineKeyboardMarkup, Message, User
-from aiogram import Router
 from config.bot_config import SupportBotSettings
+
+if TYPE_CHECKING:
+    from database.repositories import Repo
 
 
 class AbstractBotCustomization(ABC):
@@ -27,7 +32,12 @@ class AbstractBotCustomization(ABC):
         pass
 
     async def handle_master_message(
-        self, message: Message, bot_settings: SupportBotSettings
+        self,
+        message: Message,
+        bot_settings: SupportBotSettings,
+        *,
+        bot: Bot | None = None,
+        repo: Repo | None = None,
     ) -> bool:
         """Called by the core for every master-chat message before default
         handling. Return True when the message is fully handled; the core

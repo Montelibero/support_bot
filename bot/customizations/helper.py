@@ -3,7 +3,7 @@ import json
 import re
 from dataclasses import dataclass
 from html import escape
-from typing import cast
+from typing import Any, cast
 from urllib.parse import quote, unquote
 
 import redis.asyncio as aioredis
@@ -15,11 +15,21 @@ from loguru import logger
 from .interface import AbstractBotCustomization
 from .registry import register_customization
 from config.bot_config import SupportBotSettings, bot_config
+from database.repositories import Repo
 
 
 HELPER_EVENTS_CHAT_ID = -1002263825546
 HELPER_BOT_ID = 5173438724
 ACK_TIMEOUT_SECONDS = 300
+
+_CLAIM_TICKET_SCRIPT = """
+local claimed = redis.call('SET', KEYS[1], ARGV[1], 'NX')
+if claimed then
+    redis.call('SADD', KEYS[2], ARGV[2])
+    return 1
+end
+return 0
+"""
 
 _redis_client: aioredis.Redis | None = None
 
@@ -31,51 +41,149 @@ def _get_redis() -> aioredis.Redis:
     return _redis_client
 
 
-def _assignment_key(bot_id: int, user_id: int) -> str:
+def _legacy_assignment_key(bot_id: int, user_id: int) -> str:
     return f"helper:assign:{bot_id}:{user_id}"
 
 
-async def _set_assignment(
-    *, bot_id: int, user_id: int, agent_username: str, ticket_msg_id: int
-) -> None:
-    payload = json.dumps({"agent": agent_username, "ticket_msg": ticket_msg_id})
+def _ticket_assignment_key(bot_id: int, user_id: int, ticket_msg_id: int) -> str:
+    return f"helper:assign:{bot_id}:{user_id}:{ticket_msg_id}"
+
+
+def _user_tickets_key(bot_id: int, user_id: int) -> str:
+    return f"helper:user_tickets:{bot_id}:{user_id}"
+
+
+def _parse_assignment_key(key: str) -> tuple[int, int | None] | None:
+    """Return (user_id, ticket_msg_id or None) for legacy/ticket keys."""
+    parts = key.split(":")
+    if len(parts) not in (4, 5) or parts[:2] != ["helper", "assign"]:
+        return None
     try:
-        await _get_redis().set(_assignment_key(bot_id, user_id), payload)
-    except Exception as ex:
-        logger.warning(
-            f"helper assignment save failed — bot_id={bot_id}, user_id={user_id}: {ex}"
-        )
+        int(parts[2])
+        user_id = int(parts[3])
+        ticket_msg_id = int(parts[4]) if len(parts) == 5 else None
+    except ValueError:
+        return None
+    return user_id, ticket_msg_id
 
 
 @dataclass
 class Assignment:
     agent: str
     ticket_msg: int
+    user_id: int | None = None
 
 
-def _parse_assignment(raw: str | None) -> Assignment | None:
+def _parse_assignment(
+    raw: str | None, *, user_id: int | None = None
+) -> Assignment | None:
     """Parse a stored assignment; corrupted entries degrade to None."""
     if not raw:
         return None
     try:
         data = json.loads(raw)
         return Assignment(
-            agent=str(data.get("agent") or ""), ticket_msg=int(data["ticket_msg"])
+            agent=str(data.get("agent") or ""),
+            ticket_msg=int(data["ticket_msg"]),
+            user_id=user_id,
         )
     except Exception as ex:
         logger.warning(f"helper assignment parse failed for {raw!r}: {ex}")
         return None
 
 
-async def _get_assignment(*, bot_id: int, user_id: int) -> Assignment | None:
+async def _read_assignment(
+    key: str, *, user_id: int, raise_on_error: bool = False
+) -> Assignment | None:
     try:
-        raw = await _get_redis().get(_assignment_key(bot_id, user_id))
+        raw = await _get_redis().get(key)
+    except Exception as ex:
+        logger.warning(f"helper assignment read failed for {key!r}: {ex}")
+        if raise_on_error:
+            raise
+        return None
+    return _parse_assignment(raw, user_id=user_id)
+
+
+async def _get_legacy_assignment(
+    *, bot_id: int, user_id: int, raise_on_error: bool = False
+) -> Assignment | None:
+    return await _read_assignment(
+        _legacy_assignment_key(bot_id, user_id),
+        user_id=user_id,
+        raise_on_error=raise_on_error,
+    )
+
+
+async def _get_ticket_assignment(
+    *,
+    bot_id: int,
+    user_id: int,
+    ticket_msg_id: int,
+    raise_on_error: bool = False,
+) -> Assignment | None:
+    assignment = await _read_assignment(
+        _ticket_assignment_key(bot_id, user_id, ticket_msg_id),
+        user_id=user_id,
+        raise_on_error=raise_on_error,
+    )
+    if assignment is not None and assignment.ticket_msg == ticket_msg_id:
+        return assignment
+    legacy = await _get_legacy_assignment(
+        bot_id=bot_id, user_id=user_id, raise_on_error=raise_on_error
+    )
+    if legacy is not None and legacy.ticket_msg == ticket_msg_id:
+        return legacy
+    return None
+
+
+async def _get_assignments_for_user(*, bot_id: int, user_id: int) -> list[Assignment]:
+    """Return all open ticket assignments of a user, oldest ticket first."""
+    legacy_key = _legacy_assignment_key(bot_id, user_id)
+    index_key = _user_tickets_key(bot_id, user_id)
+    try:
+        redis = cast(Any, _get_redis())
+        raw_ticket_ids = await redis.smembers(index_key)
+        ticket_ids: list[int] = []
+        corrupted_ids: list[str] = []
+        for raw in raw_ticket_ids:
+            try:
+                ticket_ids.append(int(raw))
+            except (TypeError, ValueError):
+                logger.warning(f"helper ticket index value skipped: {raw!r}")
+                corrupted_ids.append(str(raw))
+        keys = [legacy_key]
+        keys.extend(
+            _ticket_assignment_key(bot_id, user_id, ticket) for ticket in ticket_ids
+        )
+        raws = await redis.mget(keys)
     except Exception as ex:
         logger.warning(
             f"helper assignment read failed — bot_id={bot_id}, user_id={user_id}: {ex}"
         )
-        return None
-    return _parse_assignment(raw)
+        return []
+
+    by_ticket: dict[int, Assignment] = {}
+    stale_ids: list[str] = []
+    for key, raw in zip(keys, raws, strict=True):
+        parsed_key = _parse_assignment_key(key)
+        assignment = _parse_assignment(raw, user_id=user_id)
+        if assignment is None:
+            if parsed_key is not None and parsed_key[1] is not None:
+                stale_ids.append(str(parsed_key[1]))
+            continue
+        if parsed_key is not None and parsed_key[1] is not None:
+            assignment.ticket_msg = parsed_key[1]
+        by_ticket[assignment.ticket_msg] = assignment
+    if stale_ids or corrupted_ids:
+        try:
+            await redis.srem(index_key, *(stale_ids + corrupted_ids))
+        except Exception as ex:
+            logger.warning(
+                f"helper ticket index cleanup failed — bot_id={bot_id}, "
+                f"user_id={user_id}: {ex}"
+            )
+    return [by_ticket[ticket] for ticket in sorted(by_ticket)]
 
 
 async def _scan_assignments(bot_id: int) -> list[tuple[str, Assignment]]:
@@ -89,79 +197,143 @@ async def _scan_assignments(bot_id: int) -> list[tuple[str, Assignment]]:
     }
     if not keys:
         return []
-    assignments: list[tuple[str, Assignment]] = []
     ordered_keys = sorted(keys)
+    raws: list[str | None] = []
     for start in range(0, len(ordered_keys), 200):
         batch = ordered_keys[start : start + 200]
-        raws = await _get_redis().mget(batch)
-        for key, raw in zip(batch, raws, strict=True):
-            assignment = _parse_assignment(raw)
-            if assignment is not None:
-                assignments.append((key, assignment))
-    return assignments
+        raws.extend(await _get_redis().mget(batch))
+
+    by_ticket: dict[tuple[int, int], tuple[str, Assignment]] = {}
+    for key, raw in zip(ordered_keys, raws, strict=True):
+        parsed_key = _parse_assignment_key(key)
+        if parsed_key is None:
+            logger.warning(f"helper assignment key skipped: {key!r}")
+            continue
+        user_id, ticket_from_key = parsed_key
+        assignment = _parse_assignment(raw, user_id=user_id)
+        if assignment is None:
+            continue
+        if ticket_from_key is not None:
+            if ticket_from_key != assignment.ticket_msg:
+                logger.warning(
+                    f"helper assignment key/value mismatch for {key!r}: "
+                    f"key={ticket_from_key}, value={assignment.ticket_msg}"
+                )
+            assignment.ticket_msg = ticket_from_key
+        by_ticket[(user_id, assignment.ticket_msg)] = (key, assignment)
+    return list(by_ticket.values())
 
 
 async def _find_assignment_by_ticket(
     bot_id: int, ticket_msg_id: int
 ) -> tuple[str, Assignment] | None:
-    """Stream assignments in batches and return the first one anchored to
-    the given ticket message, without materializing the whole table."""
-    batch: list[str] = []
+    """Find a ticket by id. New keys encode the id, so the common path is a
+    targeted SCAN; the legacy per-user key still needs a full fallback scan."""
+    redis = _get_redis()
+    exact_pattern = f"helper:assign:{bot_id}:*:{ticket_msg_id}"
+    async for key in redis.scan_iter(match=exact_pattern, count=100):
+        parsed_key = _parse_assignment_key(key)
+        if parsed_key is None or parsed_key[1] != ticket_msg_id:
+            continue
+        raw = await redis.get(key)
+        assignment = _parse_assignment(raw, user_id=parsed_key[0])
+        if assignment is not None:
+            return key, assignment
 
-    async def flush() -> tuple[str, Assignment] | None:
-        if not batch:
-            return None
-        raws = await _get_redis().mget(batch)
-        for key, raw in zip(batch, raws, strict=True):
-            assignment = _parse_assignment(raw)
-            if assignment is not None and assignment.ticket_msg == ticket_msg_id:
-                return key, assignment
-        batch.clear()
-        return None
-
-    async for key in _get_redis().scan_iter(
-        match=f"helper:assign:{bot_id}:*", count=100
-    ):
-        batch.append(key)
-        if len(batch) >= 200:
-            found = await flush()
-            if found is not None:
-                return found
-    return await flush()
+    for key, assignment in await _scan_assignments(bot_id):
+        if assignment.ticket_msg == ticket_msg_id:
+            return key, assignment
+    return None
 
 
-async def _claim_assignment(
+async def _claim_ticket(
     *,
     bot_id: int,
     user_id: int,
     agent_username: str,
     ticket_msg_id: int,
-    previous: Assignment | None,
 ) -> bool:
-    """Atomically claim the ticket for an agent.
-
-    Fresh claims use SET NX — a concurrent click by another agent cannot
-    win. Re-anchoring by the same agent is a plain overwrite. Redis errors
-    propagate to the caller.
-    """
-    key = _assignment_key(bot_id, user_id)
+    """Atomically claim one ticket. A legacy assignment for the same ticket
+    also blocks the claim; Redis errors propagate to the caller."""
+    legacy = await _get_legacy_assignment(
+        bot_id=bot_id, user_id=user_id, raise_on_error=True
+    )
+    if legacy is not None and legacy.ticket_msg == ticket_msg_id:
+        return False
     payload = json.dumps({"agent": agent_username, "ticket_msg": ticket_msg_id})
-    result = await _get_redis().set(key, payload, nx=previous is None)
-    return bool(result) if previous is None else True
+    redis = cast(Any, _get_redis())
+    result = await redis.eval(
+        _CLAIM_TICKET_SCRIPT,
+        2,
+        _ticket_assignment_key(bot_id, user_id, ticket_msg_id),
+        _user_tickets_key(bot_id, user_id),
+        payload,
+        str(ticket_msg_id),
+    )
+    return bool(result)
 
 
-async def _delete_assignment(*, bot_id: int, user_id: int) -> None:
+async def _restore_ticket_assignment(
+    *, bot_id: int, user_id: int, ticket_msg_id: int, agent_username: str
+) -> None:
     try:
-        await _get_redis().delete(_assignment_key(bot_id, user_id))
+        payload = json.dumps({"agent": agent_username, "ticket_msg": ticket_msg_id})
+        redis = cast(Any, _get_redis())
+        pipe = redis.pipeline(transaction=True)
+        pipe.set(
+            _ticket_assignment_key(bot_id, user_id, ticket_msg_id),
+            payload,
+            nx=True,
+        )
+        pipe.sadd(_user_tickets_key(bot_id, user_id), str(ticket_msg_id))
+        await pipe.execute()
     except Exception as ex:
         logger.warning(
-            f"helper assignment delete failed — bot_id={bot_id}, user_id={user_id}: {ex}"
+            f"helper assignment restore failed — bot_id={bot_id}, "
+            f"user_id={user_id}, ticket={ticket_msg_id}: {ex}"
         )
+
+
+async def _delete_ticket_assignment(
+    *, bot_id: int, user_id: int, ticket_msg_id: int
+) -> bool | None:
+    try:
+        redis = cast(Any, _get_redis())
+        keys = [_ticket_assignment_key(bot_id, user_id, ticket_msg_id)]
+        legacy = await _get_legacy_assignment(
+            bot_id=bot_id, user_id=user_id, raise_on_error=True
+        )
+        if legacy is not None and legacy.ticket_msg == ticket_msg_id:
+            keys.append(_legacy_assignment_key(bot_id, user_id))
+        pipe = redis.pipeline(transaction=True)
+        pipe.delete(*keys)
+        results = await pipe.execute()
+        deleted = results[0]
+        try:
+            await redis.srem(_user_tickets_key(bot_id, user_id), str(ticket_msg_id))
+        except Exception as ex:
+            logger.warning(
+                f"helper ticket index cleanup failed — bot_id={bot_id}, "
+                f"user_id={user_id}, ticket={ticket_msg_id}: {ex}"
+            )
+        return bool(deleted)
+    except Exception as ex:
+        logger.warning(
+            f"helper assignment delete failed — bot_id={bot_id}, "
+            f"user_id={user_id}, ticket={ticket_msg_id}: {ex}"
+        )
+        return None
 
 
 def _format_agent_tag(agent: str) -> str:
     """Render an agent reference for HTML-parse-mode texts."""
     clean = escape(agent.lstrip("@"))
+    return f"@{clean}" if clean else "-"
+
+
+def _plain_agent_tag(agent: str) -> str:
+    """Render an agent reference for plain-text callback alerts."""
+    clean = agent.lstrip("@")
     return f"@{clean}" if clean else "-"
 
 
@@ -192,16 +364,30 @@ def _encode_value(value: str) -> str:
     return quote(value, safe="")
 
 
-def _is_valid_url(url: str) -> bool:
+def _is_valid_url(url: str | None) -> bool:
     return bool(url) and (url.startswith("https://") or url.startswith("http://"))
 
 
 def _extract_message_url(message: object) -> str:
     getter = getattr(message, "get_url", None)
-    if not callable(getter):
-        return ""
-    url = getter()
-    return url if isinstance(url, str) else ""
+    if callable(getter):
+        url = getter()
+        if isinstance(url, str) and url:
+            return url
+    chat = getattr(message, "chat", None)
+    message_id = getattr(message, "message_id", None)
+    if chat is not None and isinstance(message_id, int):
+        return _message_url(chat, message_id) or ""
+    return ""
+
+
+def _message_url(chat: types.Chat, message_id: int) -> str | None:
+    if str(chat.id).startswith("-100"):
+        internal_id = str(chat.id).removeprefix("-100")
+        return f"https://t.me/c/{internal_id}/{message_id}"
+    if chat.username:
+        return f"https://t.me/{chat.username}/{message_id}"
+    return None
 
 
 def _extract_text_or_caption(message: Message) -> str:
@@ -240,7 +426,7 @@ def _build_taken_message(
         f"command=taken "
         f"user_id={user_id} "
         f"username={_encode_value(normalized_username)} "
-        f"agent_username={_encode_value(agent_username)} "
+        f"agent_username={_encode_value(agent_username.lstrip('@'))} "
         f"url={_encode_value(url)}"
     )
 
@@ -250,7 +436,7 @@ def _build_closed_message(user_id: int, agent_username: str, url: str) -> str:
         "#skynet #helper "
         f"command=closed "
         f"user_id={user_id} "
-        f"agent_username={_encode_value(agent_username)} "
+        f"agent_username={_encode_value(agent_username.lstrip('@'))} "
         f"url={_encode_value(url)} "
         "closed=true"
     )
@@ -267,12 +453,57 @@ class EndCallbackData(CallbackData, prefix="end"):
     username: str
 
 
+def _closed_reply_markup(
+    ticket_user_id: int, agent_username: str
+) -> InlineKeyboardMarkup:
+    agent_username = agent_username.lstrip("@")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(
+                    text=f"Закрыл {agent_username}",
+                    callback_data=EndCallbackData(
+                        ticket_user_id=ticket_user_id,
+                        user_id=0,
+                        username=agent_username,
+                    ).pack(),
+                )
+            ]
+        ]
+    )
+
+
+def _is_closed_ticket_message(message: object) -> bool:
+    markup = getattr(message, "reply_markup", None)
+    if not isinstance(markup, InlineKeyboardMarkup):
+        return False
+    for row in markup.inline_keyboard:
+        for button in row:
+            if button.text and button.text.startswith("Закрыл "):
+                return True
+            callback_data = button.callback_data
+            if not callback_data or not callback_data.startswith("end:"):
+                continue
+            parts = callback_data.split(":")
+            if len(parts) >= 3 and parts[2] == "0":
+                return True
+    return False
+
+
+_PENDING_ACKS: dict[tuple[str, str], PendingAck] = {}
+_PENDING_TASKS: dict[tuple[str, str], asyncio.Task[None]] = {}
+
+
 @register_customization(bot_id=HELPER_BOT_ID)
 class HelperCustomization(AbstractBotCustomization):
+    # Shared across the short-lived instances created by get_customization():
+    # channel-post/button handlers are bound to the router instance, while
+    # /take runs on a fresh instance from the core hook.
+    _pending_acks = _PENDING_ACKS
+    _pending_tasks = _PENDING_TASKS
+
     def __init__(self):
         self._router: Router | None = None
-        self._pending_acks: dict[tuple[str, str], PendingAck] = {}
-        self._pending_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
     @property
     def router(self) -> Router:
@@ -367,8 +598,10 @@ class HelperCustomization(AbstractBotCustomization):
         except Exception:
             logger.exception("Failed to notify helper ACK timeout")
         finally:
-            self._pending_acks.pop(key, None)
-            self._pending_tasks.pop(key, None)
+            current = asyncio.current_task()
+            if self._pending_tasks.get(key) is current:
+                self._pending_acks.pop(key, None)
+                self._pending_tasks.pop(key, None)
 
     async def _notify_pending(self, bot: Bot, pending: PendingAck, text: str):
         await bot.send_message(
@@ -411,6 +644,8 @@ class HelperCustomization(AbstractBotCustomization):
                 message_thread_id=thread_id,
                 text=f"Ошибка helper ACK: reason={reason}",
             )
+        for key in list(self._pending_acks):
+            self._resolve_pending_ack(key[0], key[1])
 
     async def handle_helper_channel_post(self, message: Message):
         text = _extract_text_or_caption(message)
@@ -456,23 +691,290 @@ class HelperCustomization(AbstractBotCustomization):
         logger.info("Ignored helper channel command={}", command)
 
     async def handle_master_message(
-        self, message: Message, bot_settings: SupportBotSettings
+        self,
+        message: Message,
+        bot_settings: SupportBotSettings,
+        *,
+        bot: Bot | None = None,
+        repo: Repo | None = None,
     ) -> bool:
-        """Core hook: /tickets and /ticket_close_{id} in the master chat."""
-        text = message.text or ""
-        is_tickets = bool(re.match(r"^/tickets(?:@\S+)?\s*$", text, re.IGNORECASE))
-        is_close = bool(
-            re.match(r"^/ticket_close_\d+(?:@\S+)?\s*$", text, re.IGNORECASE)
-        )
-        if not is_tickets and not is_close:
+        """Core hook: /take, /tickets and /ticket_close_{id} in master chat."""
+        text = _extract_text_or_caption(message).strip()
+        is_take = bool(re.match(r"^/take(?:[\s@_]|$)", text, re.IGNORECASE))
+        is_tickets = bool(re.match(r"^/tickets(?:[\s@_]|$)", text, re.IGNORECASE))
+        is_close = bool(re.match(r"^/ticket_close(?:[\s@_]|$)", text, re.IGNORECASE))
+        if not is_take and not is_tickets and not is_close:
             return False
         if _foreign_command_mention(text, bot_settings.username):
-            return False
-        if is_tickets:
-            await self.cmd_tickets(message, bot_settings)
-        else:
-            await self.cmd_ticket_close(message, bot_settings)
+            # Never let a command-like reply fall through to the client when
+            # it is addressed to another bot or has a typo in our username.
+            return True
+        try:
+            if is_take:
+                await self.cmd_take(message, bot_settings, bot=bot, repo=repo)
+            elif is_tickets:
+                await self.cmd_tickets(message, bot_settings)
+            else:
+                await self.cmd_ticket_close(message, bot_settings, bot=bot, repo=repo)
+        except Exception:
+            # A recognized master-chat command must never fall through to the
+            # core: for a reply to a ticket the core would send the command
+            # text to the client as an agent reply.
+            logger.exception(
+                "helper master command failed — bot_id={}, text={!r}",
+                bot_settings.id,
+                text,
+            )
+            try:
+                await message.answer("Не удалось обработать команду")
+            except Exception:
+                logger.exception("helper command failure reply failed")
         return True
+
+    async def _install_take_close_button(
+        self,
+        *,
+        bot: Bot,
+        ticket_message: Message,
+        client_user_id: int,
+        agent_user_id: int,
+        agent_username: str,
+    ) -> None:
+        """Put the same close button on the ticket that the button flow uses."""
+        reply_markup = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text=f"Взял {agent_username}",
+                        callback_data=EndCallbackData(
+                            ticket_user_id=client_user_id,
+                            user_id=agent_user_id,
+                            username=agent_username,
+                        ).pack(),
+                    )
+                ]
+            ]
+        )
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=ticket_message.chat.id,
+                message_id=ticket_message.message_id,
+                reply_markup=reply_markup,
+            )
+        except Exception as ex:
+            logger.warning(
+                "helper close button install failed — bot_id={}, ticket_msg_id={}: {}",
+                bot.id,
+                ticket_message.message_id,
+                ex,
+            )
+
+    async def cmd_take(
+        self,
+        message: Message,
+        bot_settings: SupportBotSettings,
+        *,
+        bot: Bot | None = None,
+        repo: Repo | None = None,
+    ) -> None:
+        bot = bot or message.bot
+        if bot is None or repo is None:
+            logger.warning(
+                "helper /take missing dependencies — bot={}, repo={}",
+                bot is not None,
+                repo is not None,
+            )
+            await message.answer(
+                "Не удалось обработать /take: внутренняя зависимость недоступна"
+            )
+            return
+
+        if message.text is None:
+            await message.answer(
+                "Команда /take не поддерживает вложения. Отправьте её текстом."
+            )
+            return
+
+        tokens = (message.text or "").split()
+        if not tokens:
+            return
+        command = tokens[0].lower()
+        if command.startswith("/take_"):
+            await message.answer(
+                "Команда /take используется ответом на сообщение тикета, без ID."
+            )
+            return
+
+        if len(tokens) > 1:
+            await message.answer(
+                "Команда /take не принимает аргументов. Ответьте ею на сообщение тикета."
+            )
+            return
+
+        target = message.reply_to_message
+        if target is None:
+            await message.answer(
+                "Команду /take нужно отправить ответом на сообщение тикета"
+            )
+            return
+        if target.text is None:
+            await message.answer(
+                "Ответьте /take на текстовое сообщение с ID тикета "
+                "(под медиа-вложением), а не на само медиа"
+            )
+            return
+        if _is_closed_ticket_message(target):
+            await message.answer(f"Тикет {target.message_id} уже закрыт")
+            return
+
+        from_user = message.from_user
+        if from_user is None or from_user.is_bot or not from_user.username:
+            await message.answer("Установите @username в Telegram, чтобы брать тикеты")
+            return
+        agent_username = from_user.username
+
+        try:
+            resend_info = await repo.get_message_resend_info(
+                bot_id=bot_settings.id,
+                resend_id=target.message_id,
+                chat_for_id=target.chat.id,
+            )
+        except Exception:
+            logger.exception(
+                "helper /take ticket lookup failed — bot_id={}, ticket_msg_id={}",
+                bot_settings.id,
+                target.message_id,
+            )
+            await message.answer("Не удалось взять тикет: ошибка базы")
+            return
+        if resend_info is None:
+            await message.answer(
+                "Это сообщение не является тикетом пользователя. "
+                "Ответьте на пересланное сообщение из тикета."
+            )
+            return
+        client_user_id = int(resend_info.chat_from_id)
+
+        url = _extract_message_url(target)
+        if not _is_valid_url(url):
+            await message.answer(
+                "Не удалось отправить событие: некорректный URL тикета"
+            )
+            return
+
+        try:
+            claimed = await _claim_ticket(
+                bot_id=bot_settings.id,
+                user_id=client_user_id,
+                agent_username=agent_username,
+                ticket_msg_id=target.message_id,
+            )
+        except Exception as ex:
+            logger.warning(f"helper /take claim failed: {ex}")
+            await message.answer("Не удалось закрепить задачу, Redis недоступен")
+            return
+        if not claimed:
+            try:
+                current = await _get_ticket_assignment(
+                    bot_id=bot_settings.id,
+                    user_id=client_user_id,
+                    ticket_msg_id=target.message_id,
+                    raise_on_error=True,
+                )
+            except Exception:
+                logger.exception("helper /take assignment read failed")
+                await message.answer("Не удалось закрепить задачу, Redis недоступен")
+                return
+            if (
+                current is not None
+                and current.agent.lstrip("@").lower()
+                == agent_username.lstrip("@").lower()
+            ):
+                await self._install_take_close_button(
+                    bot=bot,
+                    ticket_message=target,
+                    client_user_id=client_user_id,
+                    agent_user_id=from_user.id,
+                    agent_username=agent_username,
+                )
+                await message.answer(f"Тикет {target.message_id} уже закреплён за вами")
+            else:
+                if current is not None:
+                    await message.answer(
+                        f"Тикет {target.message_id} уже взят "
+                        f"{_format_agent_tag(current.agent)}",
+                        parse_mode="HTML",
+                    )
+                else:
+                    await message.answer(
+                        f"Тикет {target.message_id} уже взят другим агентом"
+                    )
+            return
+
+        client_username = "-"
+        if repo is not None:
+            try:
+                user_info = await repo.get_user_info(client_user_id)
+            except Exception:
+                logger.exception("helper /take client lookup failed")
+                user_info = None
+            if (
+                user_info is not None
+                and isinstance(user_info.user_name, str)
+                and user_info.user_name
+            ):
+                client_username = user_info.user_name
+        if client_username == "-":
+            try:
+                client_chat = await asyncio.wait_for(
+                    bot.get_chat(client_user_id), timeout=2.0
+                )
+                client_username = client_chat.username or "-"
+            except Exception:
+                client_username = "-"
+
+        event_message = _build_taken_message(
+            user_id=client_user_id,
+            username=client_username,
+            agent_username=agent_username,
+            url=url,
+        )
+        try:
+            await bot.send_message(chat_id=HELPER_EVENTS_CHAT_ID, text=event_message)
+        except Exception:
+            await _delete_ticket_assignment(
+                bot_id=bot_settings.id,
+                user_id=client_user_id,
+                ticket_msg_id=target.message_id,
+            )
+            logger.exception("helper /take event failed — assignment rolled back")
+            await message.answer("Не удалось закрепить задачу: ошибка отправки события")
+            return
+
+        self._register_pending_ack(
+            op="taken",
+            url=url,
+            master_chat_id=target.chat.id,
+            master_thread_id=(
+                message.message_thread_id
+                or target.message_thread_id
+                or bot_settings.master_thread
+            ),
+            agent_username=agent_username,
+            bot=bot,
+        )
+        await self._install_take_close_button(
+            bot=bot,
+            ticket_message=target,
+            client_user_id=client_user_id,
+            agent_user_id=from_user.id,
+            agent_username=agent_username,
+        )
+        await message.answer(
+            f"Тикет {target.message_id} взят {_format_agent_tag(agent_username)}. "
+            f"Закрыть: /ticket_close_{target.message_id}",
+            parse_mode="HTML",
+        )
 
     async def cmd_tickets(
         self, message: Message, bot_settings: SupportBotSettings
@@ -482,7 +984,7 @@ class HelperCustomization(AbstractBotCustomization):
         except Exception as ex:
             logger.warning(f"helper /tickets failed: {ex}")
             await message.answer(
-                "Не удалось получить список тикетов, редис недоступен",
+                "Не удалось получить список тикетов, Redis недоступен",
             )
             return
         # t.me/c/ links exist only for supergroup/channel ids (-100...);
@@ -490,12 +992,12 @@ class HelperCustomization(AbstractBotCustomization):
         link_ok = str(message.chat.id).startswith("-100")
         internal_chat_id = str(message.chat.id).removeprefix("-100")
         rows: list[tuple[int, str]] = []
-        for key, assignment in stored:
-            raw_user_id = key.rsplit(":", 1)[1]
-            try:
-                client_id = int(raw_user_id)
-            except ValueError:
-                logger.warning(f"helper assignment key skipped: {key!r}")
+        for _key, assignment in stored:
+            client_id = assignment.user_id
+            if client_id is None:
+                logger.warning(
+                    f"helper assignment without user id skipped: {assignment!r}"
+                )
                 continue
             ticket = str(assignment.ticket_msg)
             if link_ok:
@@ -544,54 +1046,153 @@ class HelperCustomization(AbstractBotCustomization):
             )
 
     async def cmd_ticket_close(
-        self, message: Message, bot_settings: SupportBotSettings
+        self,
+        message: Message,
+        bot_settings: SupportBotSettings,
+        *,
+        bot: Bot | None = None,
+        repo: Repo | None = None,
     ) -> None:
+        if message.text is None:
+            await message.answer(
+                "Команда /ticket_close не поддерживает вложения. Отправьте её текстом."
+            )
+            return
         match = re.match(
             r"^/ticket_close_(\d+)(?:@\S+)?\s*$",
-            message.text or "",
+            (message.text or "").strip(),
             re.IGNORECASE,
         )
         if match is None:
-            return
-        ticket_msg_id = int(match.group(1))
-        try:
-            found = await _find_assignment_by_ticket(bot_settings.id, ticket_msg_id)
-        except Exception as ex:
-            logger.warning(f"helper /ticket_close failed: {ex}")
             await message.answer(
-                "Не удалось закрыть тикет, редис недоступен",
+                "Команда закрытия используется в формате /ticket_close_<id>"
             )
             return
-        if found is None:
+        ticket_msg_id = int(match.group(1))
+        client_id: int | None = None
+        assignment: Assignment | None = None
+
+        if repo is not None:
+            try:
+                resend_info = await repo.get_message_resend_info(
+                    bot_id=bot_settings.id,
+                    resend_id=ticket_msg_id,
+                    chat_for_id=message.chat.id,
+                )
+            except Exception:
+                logger.exception("helper /ticket_close lookup failed")
+                resend_info = None
+            if resend_info is not None:
+                client_id = int(resend_info.chat_from_id)
+
+        if client_id is not None:
+            try:
+                assignment = await _get_ticket_assignment(
+                    bot_id=bot_settings.id,
+                    user_id=client_id,
+                    ticket_msg_id=ticket_msg_id,
+                    raise_on_error=True,
+                )
+            except Exception:
+                logger.exception("helper /ticket_close read failed")
+                await message.answer("Не удалось закрыть тикет, Redis недоступен")
+                return
+        else:
+            try:
+                found = await _find_assignment_by_ticket(bot_settings.id, ticket_msg_id)
+            except Exception as ex:
+                logger.warning(f"helper /ticket_close failed: {ex}")
+                await message.answer(
+                    "Не удалось закрыть тикет, Redis недоступен",
+                )
+                return
+            if found is None:
+                await message.answer(
+                    f"Открытый тикет с сообщением {ticket_msg_id} не найден",
+                )
+                return
+            _key, assignment = found
+            client_id = assignment.user_id
+
+        if assignment is None or client_id is None:
             await message.answer(
                 f"Открытый тикет с сообщением {ticket_msg_id} не найден",
             )
             return
-        key, assignment = found
-        try:
-            client_id = int(key.rsplit(":", 1)[1])
-        except ValueError:
-            client_id = None
-        # Re-check the anchor right before deleting: the assignment may have
-        # been re-taken to a newer ticket since the scan above.
-        current = (
-            await _get_assignment(bot_id=bot_settings.id, user_id=client_id)
-            if client_id is not None
-            else None
+        bot = bot or message.bot
+        url = _message_url(message.chat, ticket_msg_id)
+        if bot is not None and not _is_valid_url(url):
+            await message.answer(
+                "Не удалось отправить событие: некорректный URL тикета"
+            )
+            return
+        deleted = await _delete_ticket_assignment(
+            bot_id=bot_settings.id,
+            user_id=client_id,
+            ticket_msg_id=ticket_msg_id,
         )
-        if current is None or current.ticket_msg != ticket_msg_id:
+        if deleted is None:
             await message.answer(
-                "Этот тикет уже закрыт или закреплён за другим сообщением",
+                "Не удалось закрыть тикет, Redis недоступен",
             )
             return
-        try:
-            await _get_redis().delete(key)
-        except Exception as ex:
-            logger.warning(f"helper /ticket_close delete failed: {ex}")
-            await message.answer(
-                "Не удалось закрыть тикет, редис недоступен",
-            )
+        if deleted is False:
+            await message.answer("Этот тикет уже закрыт")
             return
+        closer = assignment.agent
+        if (
+            message.from_user is not None
+            and isinstance(message.from_user.username, str)
+            and message.from_user.username
+        ):
+            closer = message.from_user.username
+        if bot is not None:
+            if url:
+                event_message = _build_closed_message(
+                    user_id=client_id,
+                    agent_username=closer,
+                    url=url,
+                )
+                try:
+                    await bot.send_message(
+                        chat_id=HELPER_EVENTS_CHAT_ID, text=event_message
+                    )
+                except Exception:
+                    logger.exception("helper /ticket_close event failed")
+                    await _restore_ticket_assignment(
+                        bot_id=bot_settings.id,
+                        user_id=client_id,
+                        ticket_msg_id=ticket_msg_id,
+                        agent_username=assignment.agent,
+                    )
+                    await message.answer(
+                        "Не удалось закрыть тикет: ошибка отправки события"
+                    )
+                    return
+                self._register_pending_ack(
+                    op="closed",
+                    url=url,
+                    master_chat_id=message.chat.id,
+                    master_thread_id=(
+                        message.message_thread_id or bot_settings.master_thread
+                    ),
+                    agent_username=closer,
+                    bot=bot,
+                )
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=message.chat.id,
+                    message_id=ticket_msg_id,
+                    reply_markup=_closed_reply_markup(client_id, closer.lstrip("@")),
+                )
+            except Exception as ex:
+                logger.warning(
+                    "helper /ticket_close keyboard update failed — bot_id={}, "
+                    "ticket_msg_id={}: {}",
+                    bot_settings.id,
+                    ticket_msg_id,
+                    ex,
+                )
         agent = _format_agent_tag(assignment.agent)
         await message.answer(
             f"Тикет {ticket_msg_id} закрыт (взял {agent})",
@@ -601,6 +1202,7 @@ class HelperCustomization(AbstractBotCustomization):
     async def get_help_text(self, bot_settings: SupportBotSettings) -> str:
         return (
             "\n\n<b>Helper</b>\n"
+            "<code>/take</code> — ответом на сообщение взять тикет без кнопки\n"
             "<code>/tickets</code> — открытые тикеты и их исполнители\n"
             "<code>/ticket_close_&lt;id&gt;</code> — закрыть тикет по ID сообщения"
         )
@@ -609,9 +1211,21 @@ class HelperCustomization(AbstractBotCustomization):
         self, user: types.User, message: Message, bot_settings: SupportBotSettings
     ) -> str:
         extra = f"\n/get_info_{user.id}@mymtlbot"
-        assignment = await _get_assignment(bot_id=bot_settings.id, user_id=user.id)
-        if assignment is not None and assignment.agent:
-            extra += f"\nCC {_format_agent_tag(assignment.agent)}"
+        assignments = await _get_assignments_for_user(
+            bot_id=bot_settings.id, user_id=user.id
+        )
+        agents: list[str] = []
+        seen: set[str] = set()
+        for assignment in assignments:
+            if not assignment.agent:
+                continue
+            normalized = assignment.agent.lstrip("@").lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            agents.append(assignment.agent)
+        if agents:
+            extra += "\nCC " + " ".join(_format_agent_tag(agent) for agent in agents)
         return extra
 
     def _take_button(self, user: types.User) -> InlineKeyboardMarkup:
@@ -631,8 +1245,10 @@ class HelperCustomization(AbstractBotCustomization):
     async def get_reply_markup(
         self, user: types.User, message: Message, bot_settings: SupportBotSettings
     ) -> InlineKeyboardMarkup | None:
-        assignment = await _get_assignment(bot_id=bot_settings.id, user_id=user.id)
-        if assignment is not None:
+        assignments = await _get_assignments_for_user(
+            bot_id=bot_settings.id, user_id=user.id
+        )
+        if assignments:
             return None
         return self._take_button(user)
 
@@ -667,31 +1283,12 @@ class HelperCustomization(AbstractBotCustomization):
             )
             return
 
-        existing = await _get_assignment(bot_id=bot.id, user_id=callback_data.user_id)
-        if (
-            existing is not None
-            and existing.agent.lstrip("@").lower() != agent_username.lstrip("@").lower()
-        ):
-            # the ticket is already owned by another agent; stealing it would
-            # silently discard their assignment
-            await callback.answer(
-                f"Тикет уже взят {_format_agent_tag(existing.agent)}!",
-                show_alert=True,
-            )
-            return
-        previous = existing
-
-        # Claim the assignment atomically BEFORE the channel round-trip: two
-        # agents clicking within the same moment must not both pass the check
-        # above (the Telegram send yields to the event loop for hundreds of
-        # ms, so a check-then-act gap would be a real race window).
         try:
-            claimed = await _claim_assignment(
+            claimed = await _claim_ticket(
                 bot_id=bot.id,
                 user_id=callback_data.user_id,
                 agent_username=agent_username,
                 ticket_msg_id=message_obj.message_id,
-                previous=previous,
             )
         except Exception as ex:
             logger.warning(f"helper take claim failed: {ex}")
@@ -700,7 +1297,56 @@ class HelperCustomization(AbstractBotCustomization):
             )
             return
         if not claimed:
-            await callback.answer("Тикет уже взят другим агентом!", show_alert=True)
+            try:
+                current = await _get_ticket_assignment(
+                    bot_id=bot.id,
+                    user_id=callback_data.user_id,
+                    ticket_msg_id=message_obj.message_id,
+                    raise_on_error=True,
+                )
+            except Exception:
+                logger.exception("helper take assignment read failed")
+                await callback.answer(
+                    "Не удалось закрепить задачу, Redis недоступен",
+                    show_alert=True,
+                )
+                return
+            if (
+                current is not None
+                and current.agent.lstrip("@").lower()
+                == agent_username.lstrip("@").lower()
+            ):
+                await self._install_take_close_button(
+                    bot=bot,
+                    ticket_message=message_obj,
+                    client_user_id=callback_data.user_id,
+                    agent_user_id=callback.from_user.id,
+                    agent_username=agent_username,
+                )
+                await callback.answer("Тикет уже закреплён за вами")
+            elif current is not None:
+                await callback.answer(
+                    f"Тикет уже взят {_plain_agent_tag(current.agent)}!",
+                    show_alert=True,
+                )
+            elif _is_closed_ticket_message(message_obj):
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=message_obj.chat.id,
+                        message_id=message_obj.message_id,
+                        reply_markup=None,
+                    )
+                except Exception as ex:
+                    logger.warning(
+                        "helper closed take keyboard cleanup failed — bot_id={}, "
+                        "ticket_msg_id={}: {}",
+                        bot.id,
+                        message_obj.message_id,
+                        ex,
+                    )
+                await callback.answer("Тикет уже закрыт", show_alert=True)
+            else:
+                await callback.answer("Тикет уже взят другим агентом!", show_alert=True)
             return
 
         event_message = _build_taken_message(
@@ -714,15 +1360,11 @@ class HelperCustomization(AbstractBotCustomization):
         except Exception:
             # roll the claim back so the take can be retried, then tell the
             # agent instead of leaving the button spinner hanging
-            if previous is None:
-                await _delete_assignment(bot_id=bot.id, user_id=callback_data.user_id)
-            else:
-                await _set_assignment(
-                    bot_id=bot.id,
-                    user_id=callback_data.user_id,
-                    agent_username=previous.agent,
-                    ticket_msg_id=previous.ticket_msg,
-                )
+            await _delete_ticket_assignment(
+                bot_id=bot.id,
+                user_id=callback_data.user_id,
+                ticket_msg_id=message_obj.message_id,
+            )
             logger.exception("helper taken event failed — assignment rolled back")
             await callback.answer(
                 "Не удалось закрепить задачу: ошибка отправки события",
@@ -733,30 +1375,25 @@ class HelperCustomization(AbstractBotCustomization):
             op="taken",
             url=url,
             master_chat_id=message_obj.chat.id,
-            master_thread_id=message_obj.message_thread_id,
+            master_thread_id=(
+                message_obj.message_thread_id
+                or (
+                    settings.master_thread
+                    if (settings := bot_config.get_bot_setting(bot.id)) is not None
+                    else None
+                )
+            ),
             agent_username=agent_username,
             bot=bot,
         )
 
         await callback.answer(f"Задача закрепляется за {callback.from_user.username}")
-        reply_markup = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    types.InlineKeyboardButton(
-                        text=f"Взял {callback.from_user.username}",
-                        callback_data=EndCallbackData(
-                            ticket_user_id=callback_data.user_id,
-                            user_id=callback.from_user.id,
-                            username=str(callback.from_user.username or "-"),
-                        ).pack(),
-                    )
-                ]
-            ]
-        )
-        await bot.edit_message_reply_markup(
-            chat_id=message_obj.chat.id,
-            message_id=message_obj.message_id,
-            reply_markup=reply_markup,
+        await self._install_take_close_button(
+            bot=bot,
+            ticket_message=message_obj,
+            client_user_id=callback_data.user_id,
+            agent_user_id=callback.from_user.id,
+            agent_username=agent_username,
         )
 
     async def callbacks_lang_end(
@@ -791,48 +1428,113 @@ class HelperCustomization(AbstractBotCustomization):
             )
             return
 
+        try:
+            current = await _get_ticket_assignment(
+                bot_id=bot.id,
+                user_id=callback_data.ticket_user_id,
+                ticket_msg_id=message_obj.message_id,
+                raise_on_error=True,
+            )
+        except Exception:
+            logger.exception("helper close ticket read failed")
+            await callback.answer(
+                "Не удалось закрыть тикет: Redis недоступен", show_alert=True
+            )
+            return
+        if current is None:
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=message_obj.chat.id,
+                    message_id=message_obj.message_id,
+                    reply_markup=_closed_reply_markup(
+                        callback_data.ticket_user_id, agent_username
+                    ),
+                )
+            except Exception as ex:
+                logger.warning(
+                    "helper stale close keyboard cleanup failed — bot_id={}, "
+                    "ticket_msg_id={}: {}",
+                    bot.id,
+                    message_obj.message_id,
+                    ex,
+                )
+            await callback.answer("Задача уже закрыта")
+            return
+        allowed_usernames = {
+            username.lstrip("@").lower()
+            for username in (callback.from_user.username, callback_data.username)
+            if username
+        }
+        if current.agent.lstrip("@").lower() not in allowed_usernames:
+            await callback.answer(
+                f"Тикет закреплён за {_plain_agent_tag(current.agent)}",
+                show_alert=True,
+            )
+            return
+
+        deleted = await _delete_ticket_assignment(
+            bot_id=bot.id,
+            user_id=callback_data.ticket_user_id,
+            ticket_msg_id=message_obj.message_id,
+        )
+        if deleted is None:
+            await callback.answer("Не удалось удалить тикет из Redis", show_alert=True)
+            return
+        if deleted is False:
+            await callback.answer("Тикет уже закрыт или переназначен", show_alert=True)
+            return
+
         event_message = _build_closed_message(
             user_id=callback_data.ticket_user_id,
             agent_username=agent_username,
             url=url,
         )
-        await bot.send_message(chat_id=HELPER_EVENTS_CHAT_ID, text=event_message)
+        try:
+            await bot.send_message(chat_id=HELPER_EVENTS_CHAT_ID, text=event_message)
+        except Exception:
+            logger.exception("helper closed event failed")
+            await _restore_ticket_assignment(
+                bot_id=bot.id,
+                user_id=callback_data.ticket_user_id,
+                ticket_msg_id=message_obj.message_id,
+                agent_username=current.agent,
+            )
+            await callback.answer(
+                "Не удалось закрыть тикет: ошибка отправки события",
+                show_alert=True,
+            )
+            return
         self._register_pending_ack(
             op="closed",
             url=url,
             master_chat_id=message_obj.chat.id,
-            master_thread_id=message_obj.message_thread_id,
+            master_thread_id=(
+                message_obj.message_thread_id
+                or (
+                    settings.master_thread
+                    if (settings := bot_config.get_bot_setting(bot.id)) is not None
+                    else None
+                )
+            ),
             agent_username=agent_username,
             bot=bot,
         )
-        # Release the assignment only when it is still anchored to this
-        # ticket message: the user may already have a newer ticket taken
-        # by someone else, and closing this stale button must not wipe it.
-        current = await _get_assignment(
-            bot_id=bot.id, user_id=callback_data.ticket_user_id
-        )
-        if current is not None and current.ticket_msg == message_obj.message_id:
-            await _delete_assignment(
-                bot_id=bot.id, user_id=callback_data.ticket_user_id
-            )
 
-        reply_markup = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    types.InlineKeyboardButton(
-                        text=f"Закрыл {callback.from_user.username}",
-                        callback_data=EndCallbackData(
-                            ticket_user_id=callback_data.ticket_user_id,
-                            user_id=0,
-                            username=callback_data.username,
-                        ).pack(),
-                    )
-                ]
-            ]
+        reply_markup = _closed_reply_markup(
+            callback_data.ticket_user_id, agent_username
         )
-        await bot.edit_message_reply_markup(
-            chat_id=message_obj.chat.id,
-            message_id=message_obj.message_id,
-            reply_markup=reply_markup,
-        )
-        await callback.answer(f"{callback_data.username} умничка !")
+        await callback.answer(f"{agent_username} умничка !")
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=message_obj.chat.id,
+                message_id=message_obj.message_id,
+                reply_markup=reply_markup,
+            )
+        except Exception as ex:
+            logger.warning(
+                "helper closed keyboard update failed — bot_id={}, "
+                "ticket_msg_id={}: {}",
+                bot.id,
+                message_obj.message_id,
+                ex,
+            )

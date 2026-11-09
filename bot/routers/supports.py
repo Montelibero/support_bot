@@ -533,7 +533,12 @@ async def cmd_resend(
     if message.chat.id == bot_settings.master_chat:
         customization = get_customization(bot.id)
         try:
-            if await customization.handle_master_message(message, bot_settings):
+            if await customization.handle_master_message(
+                message,
+                bot_settings,
+                bot=bot,
+                repo=repo,
+            ):
                 return
         except Exception:
             logger.exception(

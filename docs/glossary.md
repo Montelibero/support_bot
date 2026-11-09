@@ -11,6 +11,9 @@
 | Master Thread | Optional forum topic/thread inside the master chat. |
 | Operator | Human support agent replying to user tickets. |
 | Ticket | Logical conversation unit with a user. |
+| Ticket Assignment | Binding of one master-chat ticket message to an agent. One user may have several assignments, one per open ticket. |
+| Take Command | `/take` sent as a reply to a ticket message; claims that ticket and installs its close button. |
+| CC Agents | All active assignees of a user, rendered as `CC @A @B` on forwarded messages. |
 | Callback | Telegram button interaction payload. |
 | Helper Customization | Bot-specific behavior for helper workflow (`bot_id=5173438724`). |
 | Helper Event | Structured one-line event sent to channel for helper workflow. |

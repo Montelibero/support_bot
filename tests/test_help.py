@@ -113,6 +113,7 @@ async def test_help_appends_helper_plugin_section():
 
     text = message.answer.await_args.args[0]
     assert "<b>Helper</b>" in text
+    assert "/take" in text
     assert "/tickets" in text
     assert "/ticket_close_&lt;id&gt;" in text
 
