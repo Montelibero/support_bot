@@ -368,26 +368,21 @@ def _is_valid_url(url: str | None) -> bool:
     return bool(url) and (url.startswith("https://") or url.startswith("http://"))
 
 
+def _message_url(chat: types.Chat, message_id: int) -> str | None:
+    if chat.username:
+        return f"https://t.me/{chat.username}/{message_id}"
+    if str(chat.id).startswith("-100"):
+        internal_id = str(chat.id).removeprefix("-100")
+        return f"https://t.me/c/{internal_id}/{message_id}"
+    return None
+
+
 def _extract_message_url(message: object) -> str:
-    getter = getattr(message, "get_url", None)
-    if callable(getter):
-        url = getter()
-        if isinstance(url, str) and url:
-            return url
     chat = getattr(message, "chat", None)
     message_id = getattr(message, "message_id", None)
     if chat is not None and isinstance(message_id, int):
         return _message_url(chat, message_id) or ""
     return ""
-
-
-def _message_url(chat: types.Chat, message_id: int) -> str | None:
-    if str(chat.id).startswith("-100"):
-        internal_id = str(chat.id).removeprefix("-100")
-        return f"https://t.me/c/{internal_id}/{message_id}"
-    if chat.username:
-        return f"https://t.me/{chat.username}/{message_id}"
-    return None
 
 
 def _extract_text_or_caption(message: Message) -> str:
@@ -701,7 +696,7 @@ class HelperCustomization(AbstractBotCustomization):
         """Core hook: /take, /tickets and /ticket_close_{id} in master chat."""
         text = _extract_text_or_caption(message).strip()
         is_take = bool(re.match(r"^/take(?:[\s@_]|$)", text, re.IGNORECASE))
-        is_tickets = bool(re.match(r"^/tickets(?:[\s@_]|$)", text, re.IGNORECASE))
+        is_tickets = bool(re.match(r"^/tickets(?:[\s@]|$)", text, re.IGNORECASE))
         is_close = bool(re.match(r"^/ticket_close(?:[\s@_]|$)", text, re.IGNORECASE))
         if not is_take and not is_tickets and not is_close:
             return False
@@ -911,27 +906,13 @@ class HelperCustomization(AbstractBotCustomization):
                     )
             return
 
-        client_username = "-"
-        if repo is not None:
-            try:
-                user_info = await repo.get_user_info(client_user_id)
-            except Exception:
-                logger.exception("helper /take client lookup failed")
-                user_info = None
-            if (
-                user_info is not None
-                and isinstance(user_info.user_name, str)
-                and user_info.user_name
-            ):
-                client_username = user_info.user_name
-        if client_username == "-":
-            try:
-                client_chat = await asyncio.wait_for(
-                    bot.get_chat(client_user_id), timeout=2.0
-                )
-                client_username = client_chat.username or "-"
-            except Exception:
-                client_username = "-"
+        try:
+            client_chat = await asyncio.wait_for(
+                bot.get_chat(client_user_id), timeout=2.0
+            )
+            client_username = client_chat.username or "-"
+        except Exception:
+            client_username = "-"
 
         event_message = _build_taken_message(
             user_id=client_user_id,
@@ -1282,6 +1263,9 @@ class HelperCustomization(AbstractBotCustomization):
                 "Не удалось отправить событие: некорректный URL", show_alert=True
             )
             return
+        if _is_closed_ticket_message(message_obj):
+            await callback.answer("Тикет уже закрыт", show_alert=True)
+            return
 
         try:
             claimed = await _claim_ticket(
@@ -1329,22 +1313,6 @@ class HelperCustomization(AbstractBotCustomization):
                     f"Тикет уже взят {_plain_agent_tag(current.agent)}!",
                     show_alert=True,
                 )
-            elif _is_closed_ticket_message(message_obj):
-                try:
-                    await bot.edit_message_reply_markup(
-                        chat_id=message_obj.chat.id,
-                        message_id=message_obj.message_id,
-                        reply_markup=None,
-                    )
-                except Exception as ex:
-                    logger.warning(
-                        "helper closed take keyboard cleanup failed — bot_id={}, "
-                        "ticket_msg_id={}: {}",
-                        bot.id,
-                        message_obj.message_id,
-                        ex,
-                    )
-                await callback.answer("Тикет уже закрыт", show_alert=True)
             else:
                 await callback.answer("Тикет уже взят другим агентом!", show_alert=True)
             return

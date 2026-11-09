@@ -223,6 +223,7 @@ def _make_settings():
 def _make_message_mock(text=None, bot=None, chat_id=MASTER_CHAT_ID):
     message = MagicMock()
     message.chat.id = chat_id
+    message.chat.username = None
     message.bot = bot if bot is not None else _make_bot()
     message.text = text
     message.from_user = None
@@ -233,11 +234,12 @@ def _make_message_mock(text=None, bot=None, chat_id=MASTER_CHAT_ID):
 def _ticket_message_mock(message_id=556):
     message = MagicMock()
     message.chat.id = MASTER_CHAT_ID
+    message.chat.username = None
     message.message_thread_id = None
     message.message_id = message_id
     message.media_group_id = None
     message.text = "ticket #ID777"
-    message.get_url = MagicMock(return_value="https://example.com/task/1")
+    message.get_url = MagicMock(return_value="https://t.me/c/1234567890/556")
     return message
 
 
@@ -2201,6 +2203,37 @@ async def test_closed_ticket_cannot_be_retaken(customization, fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_closed_ticket_button_click_keeps_keyboard(customization, fake_redis):
+    bot = _make_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    callback = AsyncMock()
+    callback.message = _ticket_message_mock(message_id=556)
+    callback.message.reply_markup = helper_mod._closed_reply_markup(777, "agent1")
+    callback.bot = bot
+    callback.from_user.id = 888
+    callback.from_user.username = "agent2"
+
+    await customization.callbacks_lang_get(
+        callback, GetCallbackData(user_id=777, username="client")
+    )
+
+    assert key not in fake_redis.store
+    bot.send_message.assert_not_awaited()
+    bot.edit_message_reply_markup.assert_not_awaited()
+    assert callback.answer.await_args.args[0] == "Тикет уже закрыт"
+
+
+@pytest.mark.asyncio
+async def test_public_supergroup_url_is_consistent(customization, fake_redis):
+    target = _ticket_message_mock(message_id=556)
+    target.chat.username = "public_master"
+    expected = "https://t.me/public_master/556"
+
+    assert helper_mod._extract_message_url(target) == expected
+    assert helper_mod._message_url(target.chat, 556) == expected
+
+
+@pytest.mark.asyncio
 async def test_closed_ticket_without_keyboard_can_be_retaken(customization, fake_redis):
     bot = _make_ticket_bot()
     key = f"helper:assign:{bot.id}:777:556"
@@ -2678,7 +2711,7 @@ async def test_take_uses_operator_thread_for_ack(customization, fake_redis):
         repo=_make_take_repo(ticket_msg_id=556),
     )
 
-    pending = helper_mod._PENDING_ACKS[("taken", "https://example.com/task/1")]
+    pending = helper_mod._PENDING_ACKS[("taken", "https://t.me/c/1234567890/556")]
     assert pending.master_thread_id == 777
 
 
@@ -2703,7 +2736,7 @@ async def test_take_button_ack_falls_back_to_settings_thread(
         callback, GetCallbackData(user_id=777, username="client")
     )
 
-    pending = helper_mod._PENDING_ACKS[("taken", "https://example.com/task/1")]
+    pending = helper_mod._PENDING_ACKS[("taken", "https://t.me/c/1234567890/556")]
     assert pending.master_thread_id == 777
 
 
@@ -2719,7 +2752,7 @@ async def test_take_ack_is_shared_between_instances(customization, fake_redis):
         bot=bot,
         repo=_make_take_repo(ticket_msg_id=556),
     )
-    assert ("taken", "https://example.com/task/1") in helper_mod._PENDING_ACKS
+    assert ("taken", "https://t.me/c/1234567890/556") in helper_mod._PENDING_ACKS
 
     other = HelperCustomization()
     dispatcher = Dispatcher()
@@ -2733,7 +2766,7 @@ async def test_take_ack_is_shared_between_instances(customization, fake_redis):
                 "date": 1700000000,
                 "text": (
                     "#helper command=ack op=taken "
-                    "url=https://example.com/task/1 status=ok"
+                    "url=https://t.me/c/1234567890/556 status=ok"
                 ),
             }
         },
@@ -2744,7 +2777,7 @@ async def test_take_ack_is_shared_between_instances(customization, fake_redis):
 
     assert (
         "taken",
-        "https://example.com/task/1",
+        "https://t.me/c/1234567890/556",
     ) not in helper_mod._PENDING_ACKS
 
 
