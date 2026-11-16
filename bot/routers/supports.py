@@ -24,6 +24,7 @@ from database.repositories import Repo
 from bot.customizations import get_customization, get_all_routers
 from bot.reactions import safe_react_to_message, safe_set_message_reaction
 from bot.delivery_queue import DeliveryQueue
+from bot.service_messages import registration_enabled, suppress_registration
 
 router = Router()
 router.include_router(get_all_routers())
@@ -162,6 +163,27 @@ def _no_name_error_text(use_local_names: bool) -> str:
         f'пришлите "/myname псевдоним" и повторите ваш ответ. '
         f"/show_names покажет занятые псевдонимы"
     )
+
+
+async def _is_bot_service_message(
+    repo: Repo,
+    bot: Bot,
+    chat_id: int,
+    reply_message: types.Message | None,
+) -> bool:
+    """True when `reply_message` is a message the bot posted on its own.
+
+    Such messages (ticket notices, command output) have no `t_messages` row, so
+    replying to them must not be reported as lost conversation history.
+    """
+    if reply_message is None:
+        return False
+    found = await repo.get_service_message(
+        bot_id=bot.id,
+        chat_id=chat_id,
+        message_id=reply_message.message_id,
+    )
+    return found is not None
 
 
 def _has_blocked_entity(message: types.Message) -> bool:
@@ -549,6 +571,31 @@ async def cmd_resend(
         reply_user = reply_message.from_user if reply_message is not None else None
         if reply_message and reply_user is not None and reply_user.id == bot.id:
             from_user = _require_from_user(message)
+            resend_info = await repo.get_message_resend_info(
+                bot_id=bot.id,
+                resend_id=reply_message.message_id,
+                chat_for_id=message.chat.id,
+            )
+            if resend_info is None:
+                # Technical messages and lost-history reports must not depend on
+                # the operator having a pseudonym: stay silent for the former
+                # and always diagnose the latter.
+                if await _is_bot_service_message(
+                    repo, bot, message.chat.id, reply_message
+                ):
+                    logger.info(
+                        "master reply to a bot service message ignored — "
+                        f"bot_id={bot.id}, "
+                        f"message_id={reply_message.message_id}"
+                    )
+                    return
+                await message.reply(
+                    "Сообщение не отправлено. Не найдена история переписки в БД \n"
+                    "Если вы уверены что переписка была, то пришлите /send ID123 "
+                    "в ответ на прошлое сообщение\n"
+                    "где 123 ID пользователя и сообщение будет ему отправлено."
+                )
+                return
             user_info = (
                 None
                 if bot_settings.use_local_names
@@ -561,19 +608,6 @@ async def cmd_resend(
             support_user_id = (
                 from_user.id if bot_settings.use_local_names else user_info.user_id  # type: ignore[union-attr]
             )
-            resend_info = await repo.get_message_resend_info(
-                bot_id=bot.id,
-                resend_id=reply_message.message_id,
-                chat_for_id=message.chat.id,
-            )
-            if resend_info is None:
-                await message.reply(
-                    "Сообщение не отправлено. Не найдена история переписки в БД \n"
-                    "Если вы уверены что переписка была, то пришлите /send ID123 "
-                    "в ответ на прошлое сообщение\n"
-                    "где 123 ID пользователя и сообщение будет ему отправлено."
-                )
-                return
             resend_kwargs = {
                 "content": _delivery_content(message),
                 "chat_id": resend_info.chat_from_id,
@@ -689,6 +723,23 @@ async def cmd_edit_msg(
         reply_user = reply_message.from_user if reply_message is not None else None
         if reply_message and reply_user is not None and reply_user.id == bot.id:
             from_user = _require_from_user(message)
+            send_info = await repo.get_message_resend_info(
+                bot_id=bot.id,
+                message_id=message.message_id,
+                chat_from_id=message.chat.id,
+            )
+            if send_info is None:
+                if await _is_bot_service_message(
+                    repo, bot, message.chat.id, reply_message
+                ):
+                    logger.info(
+                        "edit of a reply to a bot service message ignored — "
+                        f"bot_id={bot.id}, "
+                        f"message_id={message.message_id}"
+                    )
+                    return
+                await message.reply("Не удалось отправить изменения =(")
+                return
             user_info = (
                 None
                 if bot_settings.use_local_names
@@ -697,14 +748,6 @@ async def cmd_edit_msg(
             agent_name = _resolve_agent_name(from_user.id, bot_settings, user_info)
             if agent_name is None:
                 await message.reply(_no_name_error_text(bot_settings.use_local_names))
-                return
-            send_info = await repo.get_message_resend_info(
-                bot_id=bot.id,
-                message_id=message.message_id,
-                chat_from_id=message.chat.id,
-            )
-            if send_info is None:
-                await message.reply("Не удалось отправить изменения =(")
                 return
 
             text = f"{message.html_text}\n\nВам ответил {agent_name}"
@@ -883,6 +926,7 @@ def _legacy_delivery_payload(payload: dict, bot: Bot) -> dict:
     return normalized
 
 
+@suppress_registration
 async def execute_delivery_payload(
     payload: dict,
     bot: Bot,
@@ -975,6 +1019,7 @@ async def execute_delivery_payload(
     return result or []
 
 
+@suppress_registration
 async def resend_message_plus(
     content: dict,
     bot: Bot,
@@ -1247,14 +1292,17 @@ async def resend_message_plus(
         if do_exception:
             raise
         current_settings = config.get_bot_setting(bot.id)
-        if (
-            current_settings is not None
-            and content["chat_id"] == current_settings.master_chat
-        ):
-            await bot.send_message(content["chat_id"], f"Ошибка отправки\n{ex}")
-        else:
-            await bot.send_message(content["chat_id"], "Send error =(")
-
+        # Failure notices are ordinary service messages of the master chat: an
+        # operator replies to them and expects silence, so register them even
+        # though we are inside a delivery call.
+        with registration_enabled():
+            if (
+                current_settings is not None
+                and content["chat_id"] == current_settings.master_chat
+            ):
+                await bot.send_message(content["chat_id"], f"Ошибка отправки\n{ex}")
+            else:
+                await bot.send_message(content["chat_id"], "Send error =(")
     except Exception as ex:
         logger.error(
             f"resend_message_plus failed — bot_id={bot.id}, src_chat_id={content['chat_id']}, "
@@ -1263,13 +1311,14 @@ async def resend_message_plus(
         if do_exception:
             raise
         current_settings = config.get_bot_setting(bot.id)
-        if (
-            current_settings is not None
-            and content["chat_id"] == current_settings.master_chat
-        ):
-            await bot.send_message(content["chat_id"], f"Ошибка отправки\n{ex}")
-        else:
-            await bot.send_message(content["chat_id"], "Send error =(")
+        with registration_enabled():
+            if (
+                current_settings is not None
+                and content["chat_id"] == current_settings.master_chat
+            ):
+                await bot.send_message(content["chat_id"], f"Ошибка отправки\n{ex}")
+            else:
+                await bot.send_message(content["chat_id"], "Send error =(")
 
 
 @router.message_reaction()

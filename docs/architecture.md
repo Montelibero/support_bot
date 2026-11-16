@@ -13,6 +13,14 @@ Critical support-message delivery uses a durable SQLite job record as its source
 of truth and a Redis Stream/FastStream worker as the execution transport. Webhook
 updates are acknowledged only after the outbound delivery job is persisted.
 
+Master-chat replies are resolved through two tables: `t_messages` maps a
+forwarded user message to its copy in the master chat, and `t_service_messages`
+records messages the bot posted on its own (ticket notices, command output,
+error replies). The registry is filled by an aiogram session middleware in
+`bot/service_messages.py`, so core and customization messages are covered
+uniformly without plugin-side work; an operator reply to a registered service
+message is ignored instead of being reported as lost conversation history.
+
 This structure is functional and should remain stable while migration happens in small slices.
 
 ## Target State

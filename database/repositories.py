@@ -4,7 +4,7 @@ from uuid import uuid4
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from database.models import DeliveryJob, Messages, Users
+from database.models import DeliveryJob, Messages, ServiceMessages, Users
 
 
 class DeliveryRepo:
@@ -278,6 +278,18 @@ class Repo:
             sl = sl.filter(Messages.chat_from_id == chat_from_id)
         if chat_for_id:
             sl = sl.filter(Messages.chat_for_id == chat_for_id)
+        result = await self.session.execute(sl)
+        return result.scalars().first()
+
+    async def get_service_message(
+        self, bot_id: int, chat_id: int, message_id: int
+    ) -> ServiceMessages | None:
+        """Return the registry row when the bot posted this message itself."""
+        sl = select(ServiceMessages).filter(
+            ServiceMessages.bot_id == bot_id,
+            ServiceMessages.chat_id == chat_id,
+            ServiceMessages.message_id == message_id,
+        )
         result = await self.session.execute(sl)
         return result.scalars().first()
 

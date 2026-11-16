@@ -11,6 +11,7 @@
 | Master Thread | Optional forum topic/thread inside the master chat. |
 | Operator | Human support agent replying to user tickets. |
 | Ticket | Logical conversation unit with a user. |
+| Service Message | Message the bot posts to a master chat on its own initiative (ticket notices, command output, error replies). Recorded in `t_service_messages`; operator replies to it are ignored instead of being forwarded to a user. |
 | Ticket Assignment | Binding of one master-chat ticket message to an agent. One user may have several assignments, one per open ticket. |
 | Take Command | `/take` sent as a reply to a ticket message; claims that ticket and installs its close button. |
 | CC Agents | All active assignees of a user, rendered as `CC @A @B` on forwarded messages. |

@@ -15,10 +15,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from config.bot_config import bot_config
+
+# How long bot-authored messages stay in the service-message registry.
+SERVICE_MESSAGE_RETENTION_DAYS = 90
 
 # URL for async driver
 DATABASE_URL = f"sqlite+aiosqlite:///{bot_config.SQLITE_FILE_NAME}"
@@ -64,6 +68,31 @@ class Messages(Base):
     resend_id: Mapped[int] = mapped_column(BigInteger)
     chat_from_id: Mapped[int] = mapped_column(BigInteger)
     chat_for_id: Mapped[int] = mapped_column(BigInteger)
+
+
+class ServiceMessages(Base):
+    """Messages the bot posted to a master chat on its own initiative.
+
+    Operators reply to technical bot messages ("Тикет N закрыт", "/tickets"
+    output, error notices) the same way they reply to forwarded user
+    messages. Both are authored by the bot, so the `t_messages` history
+    lookup is the only discriminator; this registry marks the targets that
+    are technical, letting the core stay silent instead of reporting a lost
+    conversation history.
+    """
+
+    __tablename__ = "t_service_messages"
+    __table_args__ = (
+        UniqueConstraint("bot_id", "chat_id", "message_id", name="uq_service_message"),
+    )
+
+    record_id: Mapped[int] = mapped_column(primary_key=True)
+    record_add_date: Mapped[datetime.datetime] = mapped_column(
+        DateTime(), default=datetime.datetime.now
+    )
+    bot_id: Mapped[int] = mapped_column(BigInteger)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int] = mapped_column(BigInteger)
 
 
 class DeliveryJob(Base):
@@ -157,6 +186,24 @@ async def update_db():
             "CREATE INDEX IF NOT EXISTS ix_delivery_jobs_status_updated "
             "ON delivery_jobs (status, updated_at)"
         )
+        # Master-chat replies only look back a few weeks in practice; keeping
+        # the registry bounded avoids unbounded growth on long-lived installs.
+        await conn.exec_driver_sql(
+            "DELETE FROM t_service_messages WHERE record_add_date < datetime('now', ?)",
+            (f"-{SERVICE_MESSAGE_RETENTION_DAYS} day",),
+        )
+
+
+async def save_service_message(bot_id, chat_id, message_id):
+    """Register one bot-authored message; duplicates are ignored."""
+    async with session_maker() as session:
+        session.add(
+            ServiceMessages(bot_id=bot_id, chat_id=chat_id, message_id=message_id)
+        )
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
 
 
 async def save_message_ids(

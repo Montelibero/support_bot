@@ -360,7 +360,7 @@ def make_session() -> AiohttpSession:
 
 def make_bot(token: str, default: Optional[DefaultBotProperties] = None) -> Bot:
     """Единая точка создания aiogram Bot — подставляет сессию через make_session()."""
-    return Bot(
+    bot = Bot(
         token=token,
         default=default
         or DefaultBotProperties(
@@ -369,6 +369,12 @@ def make_bot(token: str, default: Optional[DefaultBotProperties] = None) -> Bot:
         ),
         session=make_session(),
     )
+    # Lazy import: bot.service_messages imports this module, so a module-level
+    # import here would create a cycle.
+    from bot.service_messages import install_recorder
+
+    install_recorder(bot)
+    return bot
 
 
 async def set_webhook(bot: Bot, url: str):

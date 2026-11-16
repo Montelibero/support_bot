@@ -19,6 +19,7 @@ class MockRepo(Repo):
     def __init__(self):
         self.users = {}
         self.messages = []
+        self.service_messages = {}
 
     async def get_user_info(self, user_id):
         # Return a mock object if user exists
@@ -84,6 +85,9 @@ class MockRepo(Repo):
 
             return SimpleNamespace(**msg)  # type: ignore[return-value]
         return None
+
+    async def get_service_message(self, bot_id, chat_id, message_id):
+        return self.service_messages.get((bot_id, chat_id, message_id))
 
     async def has_user_received_reply(self, bot_id: int, user_id: int) -> bool:
         for msg in self.messages:

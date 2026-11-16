@@ -429,6 +429,17 @@ async def test_edit_msg_local_name_missing_error(bot, repo, config):
     msg.reply_to_message = reply_msg
     msg.message_id = 200
 
+    repo.messages.append(
+        {
+            "bot_id": bot.id,
+            "user_id": None,
+            "message_id": 200,
+            "resend_id": 50,
+            "chat_from_id": -100,
+            "chat_for_id": 111,
+        }
+    )
+
     await cmd_edit_msg(msg, bot, repo, settings, config)
 
     msg.reply.assert_called_once()
