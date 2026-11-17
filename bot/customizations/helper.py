@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass
 from html import escape
 from typing import Any, cast
@@ -8,6 +9,7 @@ from urllib.parse import quote, unquote
 
 import redis.asyncio as aioredis
 from aiogram import Bot, F, Router, types
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
@@ -21,6 +23,13 @@ from database.repositories import Repo
 HELPER_EVENTS_CHAT_ID = -1002263825546
 HELPER_BOT_ID = 5173438724
 ACK_TIMEOUT_SECONDS = 300
+# /ticket_close_<id> is an emergency command: chat admins only, and the close
+# itself needs a confirmation that stays valid for two minutes.
+CLOSE_CONFIRM_TTL_SECONDS = 120
+CLOSE_ADMIN_ONLY_TEXT = "Закрывать тикеты может только админ чата"
+CLOSE_MASTER_CHAT_ONLY_TEXT = "Закрытие тикетов доступно только в мастер-чате"
+# Non-breaking space keeps /ticket_close_<id> on the same line as "закрыть".
+NBSP = "\u00a0"
 
 _CLAIM_TICKET_SCRIPT = """
 local claimed = redis.call('SET', KEYS[1], ARGV[1], 'NX')
@@ -448,6 +457,43 @@ class EndCallbackData(CallbackData, prefix="end"):
     username: str
 
 
+class CloseTicketCallbackData(CallbackData, prefix="cl"):
+    """Close confirmation: ticket, client, invoker and issue time."""
+
+    ticket_msg_id: int
+    client_id: int
+    user_id: int
+    issued_at: int
+
+
+class CancelCloseCallbackData(CallbackData, prefix="clx"):
+    ticket_msg_id: int
+
+
+def _master_chat_settings(
+    bot_id: int,
+) -> tuple[SupportBotSettings, int] | None:
+    """Bot settings with the resolved master chat id, when configured."""
+    settings = bot_config.get_bot_setting(bot_id)
+    if settings is None or settings.master_chat is None:
+        return None
+    return settings, int(settings.master_chat)
+
+
+async def _is_chat_admin(bot: Bot, chat_id: int, user_id: int | None) -> bool:
+    """True for chat creator/administrator; Telegram failures deny access."""
+    if user_id is None:
+        return False
+    try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+    except Exception as ex:
+        logger.warning(
+            f"helper admin check failed — chat_id={chat_id}, user_id={user_id}: {ex}"
+        )
+        return False
+    return member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR)
+
+
 def _closed_reply_markup(
     ticket_user_id: int, agent_username: str
 ) -> InlineKeyboardMarkup:
@@ -525,6 +571,12 @@ class HelperCustomization(AbstractBotCustomization):
         )
         router.callback_query.register(
             self.callbacks_lang_end, EndCallbackData.filter()
+        )
+        router.callback_query.register(
+            self.callbacks_ticket_close, CloseTicketCallbackData.filter()
+        )
+        router.callback_query.register(
+            self.callbacks_ticket_close_cancel, CancelCloseCallbackData.filter()
         )
         router.channel_post.register(
             self.handle_helper_channel_post, F.text.regexp(r"^\s*#helper\b")
@@ -992,7 +1044,7 @@ class HelperCustomization(AbstractBotCustomization):
                 (
                     assignment.ticket_msg,
                     f"{link} от #ID{client_id} взял {agent}"
-                    f" | закрыть /ticket_close_{ticket}",
+                    f" | закрыть{NBSP}/ticket_close_{ticket}",
                 )
             )
         # Oldest tickets first: message ids grow over time, so the smallest
@@ -1034,6 +1086,18 @@ class HelperCustomization(AbstractBotCustomization):
         bot: Bot | None = None,
         repo: Repo | None = None,
     ) -> None:
+        bot = bot or message.bot
+        if bot is None:  # pragma: no cover - aiogram always binds a bot
+            logger.error("helper /ticket_close called without a bot")
+            return
+        # The command id is printed by /tickets, so a single tap used to close
+        # a ticket: emergency close is reserved for chat admins and confirmed.
+        operator = message.from_user
+        if operator is None or not await _is_chat_admin(
+            bot, message.chat.id, operator.id
+        ):
+            await message.answer(CLOSE_ADMIN_ONLY_TEXT)
+            return
         if message.text is None:
             await message.answer(
                 "Команда /ticket_close не поддерживает вложения. Отправьте её текстом."
@@ -1050,6 +1114,51 @@ class HelperCustomization(AbstractBotCustomization):
             )
             return
         ticket_msg_id = int(match.group(1))
+        target = await self._resolve_close_target(
+            message, bot_settings, ticket_msg_id, repo
+        )
+        if target is None:
+            return
+        client_id, assignment = target
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text=f"Закрыть тикет {ticket_msg_id}",
+                        callback_data=CloseTicketCallbackData(
+                            ticket_msg_id=ticket_msg_id,
+                            client_id=client_id,
+                            user_id=operator.id,
+                            issued_at=int(time.time()),
+                        ).pack(),
+                    ),
+                    types.InlineKeyboardButton(
+                        text="Отмена",
+                        callback_data=CancelCloseCallbackData(
+                            ticket_msg_id=ticket_msg_id
+                        ).pack(),
+                    ),
+                ]
+            ]
+        )
+        await message.answer(
+            f"Закрыть тикет {ticket_msg_id} от #ID{client_id} "
+            f"(взял {_format_agent_tag(assignment.agent)})?",
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
+
+    async def _resolve_close_target(
+        self,
+        message: Message,
+        bot_settings: SupportBotSettings,
+        ticket_msg_id: int,
+        repo: Repo | None,
+    ) -> tuple[int, Assignment] | None:
+        """Find the open ticket or answer why it cannot be closed.
+
+        Returns ``None`` when the operator already got an explanation.
+        """
         client_id: int | None = None
         assignment: Assignment | None = None
 
@@ -1077,7 +1186,7 @@ class HelperCustomization(AbstractBotCustomization):
             except Exception:
                 logger.exception("helper /ticket_close read failed")
                 await message.answer("Не удалось закрыть тикет, Redis недоступен")
-                return
+                return None
         else:
             try:
                 found = await _find_assignment_by_ticket(bot_settings.id, ticket_msg_id)
@@ -1086,12 +1195,12 @@ class HelperCustomization(AbstractBotCustomization):
                 await message.answer(
                     "Не удалось закрыть тикет, Redis недоступен",
                 )
-                return
+                return None
             if found is None:
                 await message.answer(
                     f"Открытый тикет с сообщением {ticket_msg_id} не найден",
                 )
-                return
+                return None
             _key, assignment = found
             client_id = assignment.user_id
 
@@ -1099,86 +1208,183 @@ class HelperCustomization(AbstractBotCustomization):
             await message.answer(
                 f"Открытый тикет с сообщением {ticket_msg_id} не найден",
             )
+            return None
+        return client_id, assignment
+
+    async def callbacks_ticket_close(
+        self, callback: types.CallbackQuery, callback_data: CloseTicketCallbackData
+    ) -> None:
+        bot = callback.bot
+        prompt = callback.message
+        if bot is None or prompt is None:
+            await callback.answer("Не удалось обработать сообщение", show_alert=True)
             return
-        bot = bot or message.bot
-        url = _message_url(message.chat, ticket_msg_id)
-        if bot is not None and not _is_valid_url(url):
-            await message.answer(
-                "Не удалось отправить событие: некорректный URL тикета"
+        prompt = cast(Message, prompt)
+        master = _master_chat_settings(bot.id)
+        if master is None or prompt.chat.id != master[1]:
+            await callback.answer(CLOSE_MASTER_CHAT_ONLY_TEXT, show_alert=True)
+            return
+        settings, master_chat_id = master
+        if callback.from_user.id != callback_data.user_id:
+            await callback.answer("Кнопка не для вас", show_alert=True)
+            return
+        age = time.time() - callback_data.issued_at
+        if age < 0 or age > CLOSE_CONFIRM_TTL_SECONDS:
+            await callback.answer(
+                "Подтверждение устарело. Повторите "
+                f"/ticket_close_{callback_data.ticket_msg_id}",
+                show_alert=True,
+            )
+            await self._close_prompt(
+                prompt,
+                bot,
+                f"Подтверждение закрытия тикета {callback_data.ticket_msg_id} устарело",
             )
             return
+        if not await _is_chat_admin(bot, master_chat_id, callback.from_user.id):
+            await callback.answer(CLOSE_ADMIN_ONLY_TEXT, show_alert=True)
+            return
+        try:
+            assignment = await _get_ticket_assignment(
+                bot_id=bot.id,
+                user_id=callback_data.client_id,
+                ticket_msg_id=callback_data.ticket_msg_id,
+                raise_on_error=True,
+            )
+        except Exception:
+            logger.exception("helper ticket close confirm read failed")
+            await callback.answer(
+                "Не удалось закрыть тикет: Redis недоступен", show_alert=True
+            )
+            return
+        if assignment is None:
+            await callback.answer("Этот тикет уже закрыт")
+            await self._close_prompt(
+                prompt, bot, f"Тикет {callback_data.ticket_msg_id} уже закрыт"
+            )
+            return
+        await callback.answer()
+        result = await self._close_ticket(
+            bot_id=bot.id,
+            bot=bot,
+            chat=prompt.chat,
+            master_thread_id=(
+                getattr(prompt, "message_thread_id", None)
+                or getattr(settings, "master_thread", None)
+            ),
+            ticket_msg_id=callback_data.ticket_msg_id,
+            client_id=callback_data.client_id,
+            assignment=assignment,
+            closer_username=callback.from_user.username,
+        )
+        await self._close_prompt(prompt, bot, result)
+
+    async def callbacks_ticket_close_cancel(
+        self, callback: types.CallbackQuery, callback_data: CancelCloseCallbackData
+    ) -> None:
+        bot = callback.bot
+        prompt = callback.message
+        if bot is None or prompt is None:
+            await callback.answer("Не удалось обработать сообщение", show_alert=True)
+            return
+        prompt = cast(Message, prompt)
+        master = _master_chat_settings(bot.id)
+        if master is None or prompt.chat.id != master[1]:
+            await callback.answer(CLOSE_MASTER_CHAT_ONLY_TEXT, show_alert=True)
+            return
+        _, master_chat_id = master
+        if not await _is_chat_admin(bot, master_chat_id, callback.from_user.id):
+            await callback.answer(CLOSE_ADMIN_ONLY_TEXT, show_alert=True)
+            return
+        await callback.answer()
+        await self._close_prompt(
+            prompt, bot, f"Закрытие тикета {callback_data.ticket_msg_id} отменено"
+        )
+
+    async def _close_prompt(self, prompt: Message, bot: Bot, text: str) -> None:
+        """Replace the confirmation prompt with the outcome and drop buttons."""
+        try:
+            await bot.edit_message_text(
+                chat_id=prompt.chat.id,
+                message_id=prompt.message_id,
+                text=text,
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+        except Exception as ex:
+            logger.warning(
+                f"helper close prompt update failed — bot_id={bot.id}, "
+                f"chat_id={prompt.chat.id}, message_id={prompt.message_id}: {ex}"
+            )
+
+    async def _close_ticket(
+        self,
+        *,
+        bot_id: int,
+        bot: Bot,
+        chat: types.Chat,
+        master_thread_id: int | None,
+        ticket_msg_id: int,
+        client_id: int,
+        assignment: Assignment,
+        closer_username: str | None,
+    ) -> str:
+        """Close an open ticket and return the human-readable outcome."""
+        url = _message_url(chat, ticket_msg_id)
+        if url is None or not _is_valid_url(url):
+            return "Не удалось отправить событие: некорректный URL тикета"
         deleted = await _delete_ticket_assignment(
-            bot_id=bot_settings.id,
+            bot_id=bot_id,
             user_id=client_id,
             ticket_msg_id=ticket_msg_id,
         )
         if deleted is None:
-            await message.answer(
-                "Не удалось закрыть тикет, Redis недоступен",
-            )
-            return
+            return "Не удалось закрыть тикет, Redis недоступен"
         if deleted is False:
-            await message.answer("Этот тикет уже закрыт")
-            return
+            return f"Тикет {ticket_msg_id} уже закрыт"
         closer = assignment.agent
-        if (
-            message.from_user is not None
-            and isinstance(message.from_user.username, str)
-            and message.from_user.username
-        ):
-            closer = message.from_user.username
-        if bot is not None:
-            if url:
-                event_message = _build_closed_message(
-                    user_id=client_id,
-                    agent_username=closer,
-                    url=url,
-                )
-                try:
-                    await bot.send_message(
-                        chat_id=HELPER_EVENTS_CHAT_ID, text=event_message
-                    )
-                except Exception:
-                    logger.exception("helper /ticket_close event failed")
-                    await _restore_ticket_assignment(
-                        bot_id=bot_settings.id,
-                        user_id=client_id,
-                        ticket_msg_id=ticket_msg_id,
-                        agent_username=assignment.agent,
-                    )
-                    await message.answer(
-                        "Не удалось закрыть тикет: ошибка отправки события"
-                    )
-                    return
-                self._register_pending_ack(
-                    op="closed",
-                    url=url,
-                    master_chat_id=message.chat.id,
-                    master_thread_id=(
-                        message.message_thread_id or bot_settings.master_thread
-                    ),
-                    agent_username=closer,
-                    bot=bot,
-                )
-            try:
-                await bot.edit_message_reply_markup(
-                    chat_id=message.chat.id,
-                    message_id=ticket_msg_id,
-                    reply_markup=_closed_reply_markup(client_id, closer.lstrip("@")),
-                )
-            except Exception as ex:
-                logger.warning(
-                    "helper /ticket_close keyboard update failed — bot_id={}, "
-                    "ticket_msg_id={}: {}",
-                    bot_settings.id,
-                    ticket_msg_id,
-                    ex,
-                )
-        agent = _format_agent_tag(assignment.agent)
-        await message.answer(
-            f"Тикет {ticket_msg_id} закрыт (взял {agent})",
-            parse_mode="HTML",
+        if closer_username:
+            closer = closer_username
+        event_message = _build_closed_message(
+            user_id=client_id,
+            agent_username=closer,
+            url=url,
         )
+        try:
+            await bot.send_message(chat_id=HELPER_EVENTS_CHAT_ID, text=event_message)
+        except Exception:
+            logger.exception("helper /ticket_close event failed")
+            await _restore_ticket_assignment(
+                bot_id=bot_id,
+                user_id=client_id,
+                ticket_msg_id=ticket_msg_id,
+                agent_username=assignment.agent,
+            )
+            return "Не удалось закрыть тикет: ошибка отправки события"
+        self._register_pending_ack(
+            op="closed",
+            url=url,
+            master_chat_id=chat.id,
+            master_thread_id=master_thread_id,
+            agent_username=closer,
+            bot=bot,
+        )
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=chat.id,
+                message_id=ticket_msg_id,
+                reply_markup=_closed_reply_markup(client_id, closer.lstrip("@")),
+            )
+        except Exception as ex:
+            logger.warning(
+                "helper /ticket_close keyboard update failed — bot_id={}, "
+                "ticket_msg_id={}: {}",
+                bot_id,
+                ticket_msg_id,
+                ex,
+            )
+        agent = _format_agent_tag(assignment.agent)
+        return f"Тикет {ticket_msg_id} закрыт (взял {agent})"
 
     async def get_help_text(self, bot_settings: SupportBotSettings) -> str:
         return (

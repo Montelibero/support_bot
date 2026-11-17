@@ -10,17 +10,21 @@ import asyncio
 import contextlib
 import fnmatch
 import json
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiogram import Bot, BaseMiddleware, Dispatcher, types
+from aiogram.enums import ChatMemberStatus
 
 from bot.customizations import helper as helper_mod
 from bot.customizations.helper import (
     HELPER_BOT_ID,
     HELPER_EVENTS_CHAT_ID,
+    CancelCloseCallbackData,
+    CloseTicketCallbackData,
     EndCallbackData,
     GetCallbackData,
     HelperCustomization,
@@ -193,6 +197,14 @@ def _clear_helper_pending_state():
     helper_mod._PENDING_TASKS.clear()
 
 
+@pytest.fixture(autouse=True)
+def _helper_bot_settings(monkeypatch):
+    """Close-confirmation guards read the bot's master chat from settings."""
+    monkeypatch.setattr(
+        helper_mod.bot_config, "get_bot_setting", lambda bot_id: _make_settings()
+    )
+
+
 @pytest.fixture
 def customization() -> Any:
     return HelperCustomization()
@@ -217,16 +229,18 @@ def _make_settings():
     settings.ignore_cjk_messages = False
     settings.ignore_users = []
     settings.mark_bad = False
+    settings.master_thread = None
     return settings
 
 
-def _make_message_mock(text=None, bot=None, chat_id=MASTER_CHAT_ID):
+def _make_message_mock(text=None, bot=None, chat_id=MASTER_CHAT_ID, from_user=None):
     message = MagicMock()
     message.chat.id = chat_id
     message.chat.username = None
     message.bot = bot if bot is not None else _make_bot()
     message.text = text
-    message.from_user = None
+    message.from_user = from_user
+    message.message_thread_id = None
     message.answer = AsyncMock()
     return message
 
@@ -277,6 +291,78 @@ def _make_ticket_bot() -> AsyncMock:
     bot = _make_bot()
     bot.get_chat = AsyncMock(return_value=MagicMock(username="client"))
     return bot
+
+
+ADMIN_ID = 900
+ADMIN_USERNAME = "admin_tg"
+
+
+def _make_admin_user(user_id: int = ADMIN_ID, username: str | None = ADMIN_USERNAME):
+    user = MagicMock()
+    user.id = user_id
+    user.username = username
+    return user
+
+
+def _allow_chat_admin(bot: AsyncMock) -> AsyncMock:
+    member = MagicMock()
+    member.status = ChatMemberStatus.ADMINISTRATOR
+    bot.get_chat_member = AsyncMock(return_value=member)
+    return bot
+
+
+def _make_admin_bot() -> AsyncMock:
+    return _allow_chat_admin(_make_bot())
+
+
+def _make_close_prompt(
+    bot: AsyncMock, *, chat=None, message_id: int = 901, thread_id=None
+):
+    prompt = MagicMock()
+    if chat is None:
+        chat = MagicMock()
+        chat.id = MASTER_CHAT_ID
+        chat.username = None
+    prompt.chat = chat
+    prompt.message_id = message_id
+    prompt.message_thread_id = thread_id
+    prompt.bot = bot
+    return prompt
+
+
+def _make_close_callback(bot: AsyncMock, prompt, user=None):
+    callback = AsyncMock()
+    callback.bot = bot
+    callback.message = prompt
+    callback.from_user = user if user is not None else _make_admin_user()
+    return callback
+
+
+def _close_markup(message: MagicMock):
+    return message.answer.await_args.kwargs["reply_markup"]
+
+
+async def _press_close(customization, command_message, *, bot=None, user=None):
+    """Press the "Закрыть тикет" button the command sent."""
+    bot = bot or command_message.bot
+    data = CloseTicketCallbackData.unpack(
+        _close_markup(command_message).inline_keyboard[0][0].callback_data
+    )
+    prompt = _make_close_prompt(
+        bot,
+        chat=command_message.chat,
+        thread_id=getattr(command_message, "message_thread_id", None),
+    )
+    callback = _make_close_callback(bot, prompt, user=user)
+    await customization.callbacks_ticket_close(callback, data)
+    return callback, prompt
+
+
+async def _close_ticket_flow(customization, message, *, bot=None, repo=None, user=None):
+    """Command → confirmation → press: the whole admin close path."""
+    bot = bot or message.bot
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot, repo=repo)
+    return await _press_close(customization, message, bot=bot, user=user)
 
 
 @pytest.mark.asyncio
@@ -450,23 +536,27 @@ async def test_tickets_empty_state(customization, fake_redis):
 
 @pytest.mark.asyncio
 async def test_ticket_close_deletes_matching_assignment(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings())
+    await _close_ticket_flow(customization, message)
 
     assert key not in fake_redis.store
-    assert "закрыт" in message.answer.await_args.args[0]
+    assert "закрыт" in bot.edit_message_text.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
 async def test_ticket_close_unknown_id_answered(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_999", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_999", bot=bot, from_user=_make_admin_user()
+    )
 
     await customization.cmd_ticket_close(message, _make_settings())
 
@@ -476,12 +566,16 @@ async def test_ticket_close_unknown_id_answered(customization, fake_redis):
 
 @pytest.mark.asyncio
 async def test_ticket_close_own_mention_suffix_accepted(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556@mtl_helper_bot", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556@mtl_helper_bot",
+        bot=bot,
+        from_user=_make_admin_user(),
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings())
+    await _close_ticket_flow(customization, message)
 
     assert key not in fake_redis.store
 
@@ -956,15 +1050,17 @@ async def test_ticket_close_delete_failure_degrades(monkeypatch, customization):
 
     broken = DeleteBrokenRedis()
     monkeypatch.setattr(helper_mod, "_get_redis", lambda: broken)
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777"
     broken.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings())
+    await _close_ticket_flow(customization, message)
 
     assert key in broken.store  # delete failed, assignment kept
-    assert "Redis недоступен" in message.answer.await_args.args[0]
+    assert "Redis недоступен" in bot.edit_message_text.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
@@ -1211,21 +1307,23 @@ async def test_take_nx_lost_alerts_without_overwriting(
 
 @pytest.mark.asyncio
 async def test_ticket_close_one_of_two_keeps_other(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     first = f"helper:assign:{bot.id}:777:556"
     second = f"helper:assign:{bot.id}:777:600"
     fake_redis.store[first] = json.dumps({"agent": "agent1", "ticket_msg": 556})
     fake_redis.store[second] = json.dumps({"agent": "agent2", "ticket_msg": 600})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings())
+    await _close_ticket_flow(customization, message)
 
     assert first not in fake_redis.store
     assert json.loads(fake_redis.store[second]) == {
         "agent": "agent2",
         "ticket_msg": 600,
     }
-    assert "закрыт" in message.answer.await_args.args[0]
+    assert "закрыт" in bot.edit_message_text.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
@@ -1673,11 +1771,13 @@ async def test_reply_markup_stays_hidden_until_last_ticket_closed(
 
 @pytest.mark.asyncio
 async def test_button_reappears_after_command_close(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent2", "ticket_msg": 556})
-    close_message = _make_message_mock(text="/ticket_close_556", bot=bot)
-    await customization.cmd_ticket_close(close_message, _make_settings())
+    close_message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await _close_ticket_flow(customization, close_message)
     user = types.User(id=777, is_bot=False, first_name="Client")
     message = MagicMock()
     message.bot = bot
@@ -2054,34 +2154,457 @@ async def test_take_empty_text_is_ignored(customization, fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_ticket_close_uses_repo_lookup(customization, fake_redis):
+async def test_ticket_close_requires_chat_admin(customization, fake_redis):
     bot = _make_bot()
+    member = MagicMock()
+    member.status = ChatMemberStatus.MEMBER
+    bot.get_chat_member = AsyncMock(return_value=member)
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    assert "только админ" in message.answer.await_args.args[0]
+    assert message.answer.await_args.kwargs.get("reply_markup") is None
+    assert key in fake_redis.store
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_denies_when_admin_check_fails(customization, fake_redis):
+    bot = _make_bot()
+    bot.get_chat_member = AsyncMock(side_effect=RuntimeError("telegram down"))
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    assert "только админ" in message.answer.await_args.args[0]
+    assert key in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_asks_for_confirmation_first(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    assert key in fake_redis.store
+    bot.send_message.assert_not_awaited()
+    buttons = _close_markup(message).inline_keyboard[0]
+    assert buttons[0].text == "Закрыть тикет 556"
+    assert buttons[1].text == "Отмена"
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_cancel_keeps_assignment(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    cancel = CancelCloseCallbackData.unpack(
+        _close_markup(message).inline_keyboard[0][1].callback_data
+    )
+    callback = _make_close_callback(
+        bot, _make_close_prompt(bot), user=_make_admin_user(user_id=ADMIN_ID + 1)
+    )
+    await customization.callbacks_ticket_close_cancel(callback, cancel)
+
+    assert key in fake_redis.store
+    assert "отменено" in bot.edit_message_text.await_args.kwargs["text"]
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_confirm_by_other_user_rejected(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    callback, _prompt = await _press_close(
+        customization, message, user=_make_admin_user(user_id=ADMIN_ID + 1)
+    )
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert "не для вас" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_confirm_expires(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    markup = _close_markup(message)
+    data = CloseTicketCallbackData.unpack(markup.inline_keyboard[0][0].callback_data)
+    stale = CloseTicketCallbackData(
+        ticket_msg_id=data.ticket_msg_id,
+        client_id=data.client_id,
+        user_id=data.user_id,
+        issued_at=int(time.time()) - helper_mod.CLOSE_CONFIRM_TTL_SECONDS - 1,
+    )
+    callback = _make_close_callback(bot, _make_close_prompt(bot))
+    await customization.callbacks_ticket_close(callback, stale)
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert "устарело" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+    assert bot.edit_message_text.await_args.kwargs["reply_markup"] is None
+    assert "устарело" in bot.edit_message_text.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_confirm_twice_reports_already_closed(
+    customization, fake_redis
+):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await _close_ticket_flow(customization, message)
+    assert key not in fake_redis.store
+    events_before = [
+        call.kwargs["text"]
+        for call in bot.send_message.await_args_list
+        if call.kwargs.get("chat_id") == HELPER_EVENTS_CHAT_ID
+    ]
+
+    callback, _prompt = await _press_close(customization, message)
+
+    events_after = [
+        call.kwargs["text"]
+        for call in bot.send_message.await_args_list
+        if call.kwargs.get("chat_id") == HELPER_EVENTS_CHAT_ID
+    ]
+    assert "уже закрыт" in callback.answer.await_args.args[0]
+    assert len(events_after) == len(events_before) == 1
+
+
+def _callback_update(bot, *, data: str, user=None, chat_id=MASTER_CHAT_ID):
+    user = user if user is not None else _make_admin_user()
+    return types.Update.model_validate(
+        {
+            "update_id": 1,
+            "callback_query": {
+                "id": "1",
+                "from": {
+                    "id": user.id,
+                    "is_bot": False,
+                    "first_name": "Admin",
+                    "username": user.username,
+                },
+                "chat_instance": "1",
+                "data": data,
+                "message": {
+                    "message_id": 901,
+                    "date": int(time.time()),
+                    "chat": {"id": chat_id, "type": "supergroup"},
+                    "text": "Закрыть тикет 556 от #ID777?",
+                },
+            },
+        },
+        context={"bot": bot},
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_callback_reaches_handler_through_router(fake_redis):
+    """A real dispatcher must route the close button to the plugin handler."""
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    dp = Dispatcher()
+    dp.include_router(HelperCustomization().router)
+    data = CloseTicketCallbackData(
+        ticket_msg_id=556,
+        client_id=777,
+        user_id=ADMIN_ID,
+        issued_at=int(time.time()),
+    )
+
+    await dp.feed_update(bot=bot, update=_callback_update(bot, data=data.pack()))
+
+    assert key not in fake_redis.store
+    events = [
+        call.kwargs["text"]
+        for call in bot.send_message.await_args_list
+        if call.kwargs.get("chat_id") == HELPER_EVENTS_CHAT_ID
+    ]
+    assert len(events) == 1 and "command=closed" in events[0]
+
+
+@pytest.mark.asyncio
+async def test_cancel_callback_reaches_handler_through_router(fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    dp = Dispatcher()
+    dp.include_router(HelperCustomization().router)
+    data = CancelCloseCallbackData(ticket_msg_id=556)
+
+    await dp.feed_update(bot=bot, update=_callback_update(bot, data=data.pack()))
+
+    assert key in fake_redis.store
+    assert "отменено" in bot.edit_message_text.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_callback_outside_master_chat_rejected(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    prompt = _make_close_prompt(bot)
+    prompt.chat.id = -100999
+    callback = _make_close_callback(bot, prompt)
+
+    await customization.callbacks_ticket_close_cancel(
+        callback, CancelCloseCallbackData(ticket_msg_id=556)
+    )
+
+    assert "только в мастер-чате" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+    bot.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_callback_denies_when_redis_read_fails(
+    customization, fake_redis, monkeypatch
+):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    async def failing_read(**kwargs):
+        raise ConnectionError("redis down on read")
+
+    monkeypatch.setattr(helper_mod, "_get_ticket_assignment", failing_read)
+    callback, _prompt = await _press_close(customization, message)
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert "Redis недоступен" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_denies_anonymous_message(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(text="/ticket_close_556", bot=bot, from_user=None)
+
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    assert "только админ" in message.answer.await_args.args[0]
+    assert key in fake_redis.store
+    bot.get_chat_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_callback_outside_master_chat_rejected(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    data = CloseTicketCallbackData(
+        ticket_msg_id=556,
+        client_id=777,
+        user_id=ADMIN_ID,
+        issued_at=int(time.time()),
+    )
+    prompt = _make_close_prompt(bot)
+    prompt.chat.id = -100999  # admin of another chat where the bot sits
+    callback = _make_close_callback(bot, prompt)
+
+    await customization.callbacks_ticket_close(callback, data)
+
+    assert "только в мастер-чате" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_callback_accepts_chat_creator(customization, fake_redis):
+    bot = _make_bot()
+    member = MagicMock()
+    member.status = ChatMemberStatus.CREATOR
+    bot.get_chat_member = AsyncMock(return_value=member)
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+
+    await _close_ticket_flow(customization, message)
+
+    assert key not in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_close_callback_denies_demoted_admin(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    member = MagicMock()
+    member.status = ChatMemberStatus.MEMBER
+    bot.get_chat_member = AsyncMock(return_value=member)
+    callback, _prompt = await _press_close(customization, message)
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert "только админ" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_close_callback_denies_when_admin_check_fails(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    bot.get_chat_member = AsyncMock(side_effect=RuntimeError("telegram down"))
+    callback, _prompt = await _press_close(customization, message)
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert key in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_close_callback_rejects_future_issued_at(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    data = CloseTicketCallbackData.unpack(
+        _close_markup(message).inline_keyboard[0][0].callback_data
+    )
+    future = CloseTicketCallbackData(
+        ticket_msg_id=data.ticket_msg_id,
+        client_id=data.client_id,
+        user_id=data.user_id,
+        issued_at=int(time.time()) + 3600,
+    )
+    callback = _make_close_callback(bot, _make_close_prompt(bot))
+    await customization.callbacks_ticket_close(callback, future)
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert "устарело" in callback.answer.await_args.args[0]
+    assert key in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_close_callback_cancel_requires_chat_admin(customization, fake_redis):
+    bot = _make_bot()
+    member = MagicMock()
+    member.status = ChatMemberStatus.MEMBER
+    bot.get_chat_member = AsyncMock(return_value=member)
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    callback = _make_close_callback(bot, _make_close_prompt(bot))
+
+    await customization.callbacks_ticket_close_cancel(
+        callback, CancelCloseCallbackData(ticket_msg_id=556)
+    )
+
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert key in fake_redis.store
+    bot.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_event_failure_restores_assignment(customization, fake_redis):
+    bot = _make_admin_bot()
+    key = f"helper:assign:{bot.id}:777:556"
+    fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+
+    bot.send_message = AsyncMock(side_effect=RuntimeError("channel is down"))
+    _callback, _prompt = await _press_close(customization, message)
+
+    assert key in fake_redis.store  # ticket stays open
+    assert json.loads(fake_redis.store[key])["agent"] == "agent1"
+    assert "ошибка отправки события" in bot.edit_message_text.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_ticket_close_uses_repo_lookup(customization, fake_redis):
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
     repo = MagicMock()
     repo.get_message_resend_info = AsyncMock(
         return_value=SimpleNamespace(chat_from_id=777)
     )
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings(), repo=repo)
+    await _close_ticket_flow(customization, message, repo=repo)
 
     assert key not in fake_redis.store
     repo.get_message_resend_info.assert_awaited_once()
-    assert "закрыт" in message.answer.await_args.args[0]
+    assert "закрыт" in bot.edit_message_text.await_args.kwargs["text"]
     assert "command=closed" in bot.send_message.await_args.kwargs["text"]
     assert ("closed", "https://t.me/c/1234567890/556") in helper_mod._PENDING_ACKS
 
 
 @pytest.mark.asyncio
 async def test_ticket_close_button_shows_closer(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "alice", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
-    message.from_user = MagicMock(username="bob")
+    message = _make_message_mock(
+        text="/ticket_close_556",
+        bot=bot,
+        from_user=_make_admin_user(username="bob"),
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+    await _close_ticket_flow(
+        customization, message, user=_make_admin_user(username="bob")
+    )
 
     markup = bot.edit_message_reply_markup.await_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].text == "Закрыл bob"
@@ -2090,12 +2613,18 @@ async def test_ticket_close_button_shows_closer(customization, fake_redis):
 
 @pytest.mark.asyncio
 async def test_ticket_close_without_username_uses_assignee(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "alice", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556",
+        bot=bot,
+        from_user=_make_admin_user(username=None),
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+    await _close_ticket_flow(
+        customization, message, user=_make_admin_user(username=None)
+    )
 
     markup = bot.edit_message_reply_markup.await_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].text == "Закрыл alice"
@@ -2103,12 +2632,14 @@ async def test_ticket_close_without_username_uses_assignee(customization, fake_r
 
 @pytest.mark.asyncio
 async def test_ticket_close_repo_known_but_redis_missing(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     repo = MagicMock()
     repo.get_message_resend_info = AsyncMock(
         return_value=SimpleNamespace(chat_from_id=777)
     )
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
     await customization.cmd_ticket_close(message, _make_settings(), repo=repo)
 
@@ -2120,29 +2651,33 @@ async def test_ticket_close_repo_known_but_redis_missing(customization, fake_red
 async def test_ticket_close_falls_back_to_redis_when_db_missing(
     customization, fake_redis
 ):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
     repo = MagicMock()
     repo.get_message_resend_info = AsyncMock(return_value=None)
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings(), repo=repo)
+    await _close_ticket_flow(customization, message, repo=repo)
 
     assert key not in fake_redis.store
-    assert "закрыт" in message.answer.await_args.args[0]
+    assert "закрыт" in bot.edit_message_text.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
 async def test_ticket_close_db_user_mismatch_does_not_scan(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:888:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
     repo = MagicMock()
     repo.get_message_resend_info = AsyncMock(
         return_value=SimpleNamespace(chat_from_id=777)
     )
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
     await customization.cmd_ticket_close(message, _make_settings(), repo=repo)
 
@@ -2152,28 +2687,42 @@ async def test_ticket_close_db_user_mismatch_does_not_scan(customization, fake_r
 
 
 @pytest.mark.asyncio
-async def test_ticket_close_invalid_url_keeps_ticket(customization, fake_redis):
-    bot = _make_bot()
+async def test_ticket_close_invalid_url_keeps_ticket(
+    customization, fake_redis, monkeypatch
+):
+    settings = _make_settings()
+    settings.master_chat = -42
+    monkeypatch.setattr(
+        helper_mod.bot_config, "get_bot_setting", lambda bot_id: settings
+    )
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot, chat_id=-42)
+    message = _make_message_mock(
+        text="/ticket_close_556",
+        bot=bot,
+        chat_id=-42,
+        from_user=_make_admin_user(),
+    )
     message.chat.username = None
 
-    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+    await _close_ticket_flow(customization, message)
 
     assert key in fake_redis.store
-    assert "URL" in message.answer.await_args.args[0]
+    assert "URL" in bot.edit_message_text.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
 async def test_ticket_close_preserves_forum_thread(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
     message.message_thread_id = 777
 
-    await customization.cmd_ticket_close(message, _make_settings(), bot=bot)
+    await _close_ticket_flow(customization, message)
 
     pending = helper_mod._PENDING_ACKS[("closed", "https://t.me/c/1234567890/556")]
     assert pending.master_thread_id == 777
@@ -2181,11 +2730,13 @@ async def test_ticket_close_preserves_forum_thread(customization, fake_redis):
 
 @pytest.mark.asyncio
 async def test_closed_ticket_cannot_be_retaken(customization, fake_redis):
-    bot = _make_ticket_bot()
+    bot = _allow_chat_admin(_make_ticket_bot())
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    close_message = _make_message_mock(text="/ticket_close_556", bot=bot)
-    await customization.cmd_ticket_close(close_message, _make_settings())
+    close_message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await _close_ticket_flow(customization, close_message)
     assert key not in fake_redis.store
 
     target = _ticket_message_mock(message_id=556)
@@ -2235,11 +2786,13 @@ async def test_public_supergroup_url_is_consistent(customization, fake_redis):
 
 @pytest.mark.asyncio
 async def test_closed_ticket_without_keyboard_can_be_retaken(customization, fake_redis):
-    bot = _make_ticket_bot()
+    bot = _allow_chat_admin(_make_ticket_bot())
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    close_message = _make_message_mock(text="/ticket_close_556", bot=bot)
-    await customization.cmd_ticket_close(close_message, _make_settings())
+    close_message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await _close_ticket_flow(customization, close_message)
     assert key not in fake_redis.store
 
     target = _ticket_message_mock(message_id=556)
@@ -2362,10 +2915,10 @@ async def test_close_second_click_does_not_send_duplicate_event(
 
 @pytest.mark.asyncio
 async def test_ticket_close_rejects_caption_command(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent1", "ticket_msg": 556})
-    message = _make_message_mock(text=None, bot=bot)
+    message = _make_message_mock(text=None, bot=bot, from_user=_make_admin_user())
     message.caption = "/ticket_close_556"
 
     handled = await customization.handle_master_message(
@@ -2382,8 +2935,8 @@ async def test_ticket_close_rejects_caption_command(customization, fake_redis):
     "text", ["/ticket_close", "/ticket_close_", "/ticket_close 123"]
 )
 async def test_ticket_close_typos_are_consumed(customization, text):
-    bot = _make_bot()
-    message = _make_message_mock(text=text, bot=bot)
+    bot = _make_admin_bot()
+    message = _make_message_mock(text=text, bot=bot, from_user=_make_admin_user())
 
     handled = await customization.handle_master_message(
         message, _make_settings(), bot=bot
@@ -2395,14 +2948,16 @@ async def test_ticket_close_typos_are_consumed(customization, text):
 
 @pytest.mark.asyncio
 async def test_ticket_close_one_ticket_keeps_legacy_other(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     legacy = f"helper:assign:{bot.id}:777"
     new = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[legacy] = json.dumps({"agent": "agent1", "ticket_msg": 500})
     fake_redis.store[new] = json.dumps({"agent": "agent2", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_556", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings())
+    await _close_ticket_flow(customization, message)
 
     assert new not in fake_redis.store
     assert json.loads(fake_redis.store[legacy]) == {
@@ -2413,14 +2968,16 @@ async def test_ticket_close_one_ticket_keeps_legacy_other(customization, fake_re
 
 @pytest.mark.asyncio
 async def test_ticket_close_legacy_one_keeps_new_ticket(customization, fake_redis):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     legacy = f"helper:assign:{bot.id}:777"
     new = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[legacy] = json.dumps({"agent": "agent1", "ticket_msg": 500})
     fake_redis.store[new] = json.dumps({"agent": "agent2", "ticket_msg": 556})
-    message = _make_message_mock(text="/ticket_close_500", bot=bot)
+    message = _make_message_mock(
+        text="/ticket_close_500", bot=bot, from_user=_make_admin_user()
+    )
 
-    await customization.cmd_ticket_close(message, _make_settings())
+    await _close_ticket_flow(customization, message)
 
     assert legacy not in fake_redis.store
     assert json.loads(fake_redis.store[new]) == {
@@ -2573,11 +3130,13 @@ async def test_clean_user_reads_index_without_scan(customization, fake_redis):
 async def test_click_after_command_close_removes_stale_keyboard(
     customization, fake_redis
 ):
-    bot = _make_bot()
+    bot = _make_admin_bot()
     key = f"helper:assign:{bot.id}:777:556"
     fake_redis.store[key] = json.dumps({"agent": "agent2", "ticket_msg": 556})
-    close_message = _make_message_mock(text="/ticket_close_556", bot=bot)
-    await customization.cmd_ticket_close(close_message, _make_settings(), bot=bot)
+    close_message = _make_message_mock(
+        text="/ticket_close_556", bot=bot, from_user=_make_admin_user()
+    )
+    await _close_ticket_flow(customization, close_message)
     bot.edit_message_reply_markup.reset_mock()
 
     callback = AsyncMock()
